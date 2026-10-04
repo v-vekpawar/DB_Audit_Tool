@@ -1,0 +1,14 @@
+# Pinned to match Link & Navigation Audit Tool where packages overlap,
+# so both tools can later share one venv / wheel set.
+# Overlap pins (must stay identical in both tools):
+fastapi==0.115.0
+uvicorn==0.30.6
+pydantic==2.9.2
+reportlab==4.2.5
+# Norm-tool-only deps (unpinned until the offline wheel set is verified,
+# then freeze with: pip freeze > frozen.txt):
+sqlalchemy
+pymysql
+cryptography
+pg8000
+oracledb

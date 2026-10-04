@@ -1,0 +1,33 @@
+# Virtual environments
+venv/
+venv_verify/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Tool runtime (never commit, never ship in ISO)
+backend/logs/
+*.db
+*.sqlite
+*.sqlite-journal
+frozen.txt
+
+# Generated test data (recreate with generate_synthetic.py --sweep)
+scripts/testdb/synthetic/
+
+# Offline packaging output (rebuilt per release)
+wheels/
+dbnorm_package/
+*.iso
+wheels.txt
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
