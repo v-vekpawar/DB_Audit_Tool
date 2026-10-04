@@ -37,8 +37,10 @@ TABLE_STEPS = ("loading", "finding dependencies", "scoring", "classifying")
 
 
 def headline(counts, selected, not_selected):
-    scanned = selected - counts.get("not_run", 0)
-    parts = "%d of %d tables scanned" % (selected, selected + not_selected)
+    finished = sum(counts.get(k, 0) for k in ("faulted", "suspected",
+                                              "insufficient_data", "clean",
+                                              "error"))
+    parts = "%d of %d tables scanned" % (finished, selected + not_selected)
     tail = []
     for key, label in (("faulted", "faulted"), ("suspected", "suspected"),
                        ("insufficient_data", "insufficient data"),
@@ -306,6 +308,7 @@ def analyze_on_connection(engine, conn, params, selected, schema=None,
         if on_event:
             on_event(ev)
 
+    tick_stop = None
     try:
         briefs = list_tables(conn, params.db_type, schema=schema, scan_id=scan_id)
         total_in_db = len(briefs)
@@ -353,6 +356,26 @@ def analyze_on_connection(engine, conn, params, selected, schema=None,
               "total": len(selected)})
         first_est = est.estimate(list(selected))
         emit({"event": "estimate", **first_est})
+
+        import threading as _threading
+        tick_stop = _threading.Event()
+
+        def _unfinished():
+            done = {s["name"] for s in result["table_summary"]}
+            return [n for n in selected if n not in done and n not in errors]
+
+        def _tick():
+            while not tick_stop.wait(config.ETA_TICK_SECONDS):
+                try:
+                    emit({"event": "estimate", **est.estimate(_unfinished())})
+                except Exception:
+                    pass
+
+        ticker = None
+        if on_event is not None:
+            ticker = _threading.Thread(target=_tick, daemon=True,
+                                       name="estimate-" + scan_id)
+            ticker.start()
 
         ref_cache = {}
         idx = 0
@@ -474,6 +497,9 @@ def analyze_on_connection(engine, conn, params, selected, schema=None,
         emit({"event": "scan_done", "status": "failed",
               "error": err, "counts": counts})
         return result
+    finally:
+        if tick_stop is not None:
+            tick_stop.set()
 
 
 def _run_one(conn, params, detail, schema, scan_id, ref_cache, on_event,

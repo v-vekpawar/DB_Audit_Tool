@@ -78,6 +78,9 @@ def test_headline_format():
     h = headline({"faulted": 3, "suspected": 1, "insufficient_data": 1,
                   "clean": 7, "error": 0, "not_run": 0}, 12, 30)
     assert h == "12 of 42 tables scanned (30 not selected): 3 faulted, 1 suspected, 1 insufficient data, 7 clean"
+    mid = headline({"faulted": 1, "suspected": 0, "insufficient_data": 0,
+                    "clean": 0, "error": 0, "not_run": 0}, 12, 30)
+    assert mid == "1 of 42 tables scanned (30 not selected): 1 faulted"
 
 
 def test_scan_end_to_end(sqlite_conn):

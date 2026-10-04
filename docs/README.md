@@ -33,10 +33,10 @@ only talks to the database port.
  
 ## What you get
  
-1. **Form and Connect**: DB type, host, port, username, password, database (or
-   Oracle service name and schema), SSL option (certificate verification is
-   skipped, as on the rest of the vetting network). **Connect** reads the table
-   list only; no rows are read.
+1. **Form and Connect**: DB type, host, port, username, password and SSL
+   option (certificate verification is skipped, as on the rest of the
+   vetting network). **Connect** lists the databases (system and template
+   databases excluded); you tick one and list its tables. No rows are read.
 2. **Table picker**: every table with a checkbox (all ticked by default), column
    count, primary key yes/no and foreign key count; Select all, Select none, a
    filter box, and a counter ("12 of 42 selected"). Only ticked tables are scanned.
@@ -168,7 +168,7 @@ Building the wheels folder and the ISO is covered in `docs/OFFLINE_PACKAGING.md`
  
 ## Using it
  
-1. Pick the DB type, fill in the connection fields and click **Connect**.
+1. Pick the DB type, fill in the connection fields and click **Connect**. Tick one database and list its tables.
 2. Tick the tables to check (all are ticked by default) and click **Scan selected tables**.
 3. Watch the status list and the time line. Each table shows "checking" and then
    its verdict; cards appear as tables finish. **Stop scan** keeps partial results.
@@ -187,7 +187,8 @@ Connection fields:
  
 ## API (selected)
  
-- `POST /api/connect` (returns the table list)
+- `POST /api/connect` (returns the database list)
+- `POST /api/connect/tables` (returns the table list for the picked database)
 - `POST /api/scan/start` (body includes the ticked `tables`)
 - `GET /api/scan/{id}/progress` (SSE)
 - `GET /api/scan/{id}/results`

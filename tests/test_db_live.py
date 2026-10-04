@@ -177,3 +177,17 @@ def test_loader_counts_rows_and_sampling():
             assert lt.null_ratio["c1"] == 0.3
         finally:
             close(engine, conn)
+
+
+@needs_live
+def test_list_databases_excludes_system():
+    from app.metadata import list_databases
+
+    for params, sysdb in ((mysql_params(), 'mysql'), (pg_params(), 'template1')):
+        engine, conn, _ = connect(params, scan_id='live')
+        try:
+            dbs = list_databases(conn, params.db_type, scan_id='live')
+            assert 'normtest' in dbs
+            assert sysdb not in dbs
+        finally:
+            close(engine, conn)

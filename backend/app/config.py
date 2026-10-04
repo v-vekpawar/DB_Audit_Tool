@@ -57,3 +57,6 @@ LOG_BACKUP_COUNT = 5
 # Default ports / schema (convenience only)
 DEFAULT_PORTS = {"mysql": 3306, "postgresql": 5432, "oracle": 1521}
 DEFAULT_POSTGRES_SCHEMA = "public"
+
+# Last-scan store (absolute path, next to the backend)
+LAST_SCAN_DB = str(Path(__file__).resolve().parent.parent / "last_scan.sqlite")

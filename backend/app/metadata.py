@@ -17,6 +17,11 @@ EXCLUDED_SCHEMAS = frozenset({
     "mysql", "performance_schema", "sys",
 })
 
+EXCLUDED_DATABASES = frozenset({
+    "information_schema", "mysql", "performance_schema", "sys",
+    "template0", "template1",
+})
+
 EXCLUDED_TABLE_PREFIXES = ("pg_", "sql_")
 
 
@@ -45,6 +50,44 @@ def _schema_arg(db_type: str, schema: str | None):
     if (db_type or "").lower() == "mysql":
         return {}
     return {"schema": effective_schema(db_type, schema)}
+
+
+def list_databases(engine_or_conn, db_type: str, scan_id: str = "-") -> list:
+    """Database names for the picker (system/template DBs excluded).
+
+    MySQL connects without a database and runs SHOW DATABASES.
+    PostgreSQL connects to the `postgres` maintenance database.
+    Oracle lists accessible non-maintained schemas (untested to step 13).
+    Reads no table rows.
+    """
+    from sqlalchemy import text as sa_text
+    t = (db_type or "").lower()
+    with StepTimer("list_databases", scan_id):
+        try:
+            if t == "mysql":
+                rows = engine_or_conn.execute(sa_text("SHOW DATABASES")).fetchall()
+                names = [r[0] for r in rows]
+            elif t == "postgresql":
+                rows = engine_or_conn.execute(sa_text(
+                    "SELECT datname FROM pg_database WHERE NOT datistemplate "
+                    "ORDER BY 1")).fetchall()
+                names = [r[0] for r in rows]
+            elif t == "oracle":
+                rows = engine_or_conn.execute(sa_text(
+                    "SELECT username FROM all_users "
+                    "WHERE oracle_maintained = 'N' ORDER BY 1")).fetchall()
+                names = [r[0] for r in rows]
+            else:
+                raise ValueError("unsupported db_type: %r" % (db_type,))
+            out = sorted(n for n in names if n and n.lower() not in EXCLUDED_DATABASES)
+        except Exception as e:
+            get_logger().error("list_databases failed: %s: %s", type(e).__name__, e,
+                               extra={"scan_id": scan_id, "step": "list_databases",
+                                      "table": "-"})
+            raise ConnectError(map_exception(e, step="list_databases", scan_id=scan_id)) from e
+    get_logger().info("databases=%d", len(out),
+                      extra={"scan_id": scan_id, "step": "list_databases", "table": "-"})
+    return out
 
 
 def list_tables(engine_or_conn, db_type: str, schema: str | None = None,
@@ -158,6 +201,7 @@ def main(argv=None) -> int:
     ap.add_argument("--ssl", action="store_true")
     ap.add_argument("--table", default=None, help="detail for one table only")
     ap.add_argument("--full", action="store_true", help="full structure of all tables")
+    ap.add_argument("--list-dbs", action="store_true", help="list databases and exit")
     a = ap.parse_args(argv)
     pw = a.password if a.password is not None else getpass.getpass("Password: ")
     setup_logging()
@@ -165,8 +209,14 @@ def main(argv=None) -> int:
                       username=a.username, password=pw, database=a.database,
                       schema=a.schema, service_name=a.service_name, ssl=a.ssl)
     try:
+        if p.db_type == "postgresql" and not p.database and a.list_dbs:
+            p.database = "postgres"
         engine, conn, _ = connect(p, scan_id="smoke")
         try:
+            if a.list_dbs:
+                out = {"databases": list_databases(conn, p.db_type, scan_id="smoke")}
+                print(json.dumps(out, indent=2, default=str))
+                return 0
             briefs = list_tables(conn, p.db_type, schema=p.schema, scan_id="smoke")
             if a.table:
                 out = table_detail(conn, p.db_type, a.table, schema=p.schema,

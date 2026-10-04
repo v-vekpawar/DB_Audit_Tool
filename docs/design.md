@@ -494,7 +494,8 @@ result.
  
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/api/connect` | Connect, return the table list, close the connection |
+| POST | `/api/connect` | Connect, return the database list, close the connection |
+| POST | `/api/connect/tables` | Table list for the picked database, close the connection |
 | POST | `/api/scan/start` | Start a scan of the ticked tables, returns `{scan_id}` |
 | GET | `/api/scan/{id}/progress` | SSE: live events (9.3) |
 | GET | `/api/scan/{id}/results` | Final or partial result JSON |
@@ -505,7 +506,8 @@ result.
  
 ### 9.2 Bodies
  
-`POST /api/connect` body (same connection fields as start, no tables):
+`POST /api/connect` body (no database yet; PostgreSQL lists via the
+`postgres` maintenance database):
  
 ```json
 {"db_type": "mysql|postgresql|oracle", "host": "", "port": 3306,
@@ -514,7 +516,17 @@ result.
 ```
  
 Response:
- 
+
+```json
+{"scan_id": "uuid", "db_type": "postgresql", "db_version": "17.4",
+ "databases": ["normtest", "shop"]}
+```
+
+`POST /api/connect/tables` body: the connection fields plus the picked
+`database` (Oracle: `service_name` plus the picked `schema`):
+
+Response:
+
 ```json
 {"scan_id": "uuid", "db_type": "postgresql", "db_version": "17.4", "schema": "public",
  "tables": [{"name": "orders", "columns": 8, "has_pk": true, "fks": 1}]}

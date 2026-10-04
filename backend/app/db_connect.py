@@ -62,7 +62,7 @@ def default_port(db_type: str) -> int:
     return config.DEFAULT_PORTS[normalize_db_type(db_type)]
 
 
-def build_url(p: ConnectParams) -> str:
+def build_url(p: ConnectParams, require_db: bool = True) -> str:
     """SQLAlchemy URL for the engine. Password is URL-escaped."""
     t = normalize_db_type(p.db_type)
     user = quote_plus(p.username or "")
@@ -71,13 +71,15 @@ def build_url(p: ConnectParams) -> str:
     host = p.host or "localhost"
     port = p.port or default_port(t)
     if t == "mysql":
-        if not p.database:
+        db = quote_plus(p.database) if p.database else ""
+        if require_db and not db:
             raise ValueError("database is required for MySQL")
-        return "mysql+pymysql://%s%s:%d/%s" % (auth, host, port, quote_plus(p.database))
+        return "mysql+pymysql://%s%s:%d%s" % (auth, host, port, "/" + db if db else "")
     if t == "postgresql":
-        if not p.database:
+        db = quote_plus(p.database) if p.database else ""
+        if require_db and not db:
             raise ValueError("database is required for PostgreSQL")
-        return "postgresql+pg8000://%s%s:%d/%s" % (auth, host, port, quote_plus(p.database))
+        return "postgresql+pg8000://%s%s:%d%s" % (auth, host, port, "/" + db if db else "")
     if not p.service_name:
         raise ValueError("service_name is required for Oracle")
     return "oracle+oracledb://%s%s:%d/?service_name=%s" % (
@@ -258,12 +260,12 @@ def map_exception(exc: BaseException, step: str = "connect",
 # Connect flow
 # ---------------------------------------------------------------------
 
-def connect(p: ConnectParams, scan_id: str = "-"):
+def connect(p: ConnectParams, scan_id: str = "-", require_db: bool = True):
     """Open a read-only connection. Returns (engine, connection, version)."""
     from sqlalchemy import text as sa_text
     set_secrets([p.password] if p.password else [])
     t = normalize_db_type(p.db_type)
-    url = build_url(p)
+    url = build_url(p, require_db=require_db)
     log = get_logger()
     with StepTimer("connect", scan_id):
         log.info("%s %s:%d db=%s ssl=%s", ENGINE_DISPLAY[t], p.host,

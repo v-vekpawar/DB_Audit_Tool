@@ -38,6 +38,15 @@ def test_postgres_url():
     assert ":5432/shop" in url
 
 
+def test_url_without_database_for_listing():
+    url = build_url(P(database=""), require_db=False)
+    assert url == "mysql+pymysql://u:p@10.0.0.5:3306"
+    url = build_url(P(db_type="postgresql", database=""), require_db=False)
+    assert url == "postgresql+pg8000://u:p@10.0.0.5:3306"
+    with pytest.raises(ValueError):
+        build_url(P(database=""))
+
+
 def test_oracle_url_needs_service():
     url = build_url(ConnectParams(db_type="oracle", host="h", port=1521,
                                   username="u", password="p", service_name="FREEPDB1"))
