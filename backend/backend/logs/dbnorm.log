@@ -1,0 +1,49 @@
+2026-10-04 12:32:06,188 | INFO | smoke | connect | - | started
+2026-10-04 12:32:06,188 | INFO | smoke | connect | - | done (0.00s)
+2026-10-04 12:32:25,478 | INFO | smoke | connect | - | started
+2026-10-04 12:32:25,478 | INFO | smoke | connect | - | MySQL localhost:3306 db=normtest ssl=off
+2026-10-04 12:32:25,683 | INFO | smoke | readonly | - | started
+2026-10-04 12:32:25,683 | INFO | smoke | readonly | - | done (0.00s)
+2026-10-04 12:32:25,683 | INFO | smoke | version | - | started
+2026-10-04 12:32:25,683 | INFO | smoke | version | - | done (0.00s)
+2026-10-04 12:32:25,683 | INFO | smoke | version | - | version=8.0.41
+2026-10-04 12:32:25,683 | INFO | smoke | connect | - | done (0.22s)
+2026-10-04 12:32:43,444 | INFO | smoke | connect | - | started
+2026-10-04 12:32:43,485 | INFO | smoke | connect | - | PostgreSQL localhost:5432 db=normtest ssl=off
+2026-10-04 12:32:43,698 | INFO | smoke | readonly | - | started
+2026-10-04 12:32:43,714 | ERROR | smoke | readonly | - | failed: DB_READONLY_FAILED (0.02s)
+2026-10-04 12:32:43,714 | ERROR | smoke | connect | - | failed: DB_READONLY_FAILED (0.28s)
+2026-10-04 12:34:38,254 | INFO | smoke | connect | - | started
+2026-10-04 12:34:38,254 | INFO | smoke | connect | - | PostgreSQL localhost:5432 db=normtest ssl=off
+2026-10-04 12:34:38,477 | INFO | smoke | readonly | - | started
+2026-10-04 12:34:38,477 | INFO | smoke | readonly | - | done (0.00s)
+2026-10-04 12:34:38,477 | INFO | smoke | version | - | started
+2026-10-04 12:34:38,477 | INFO | smoke | version | - | done (0.00s)
+2026-10-04 12:34:38,477 | INFO | smoke | version | - | version=PostgreSQL 17.4 on x86_64-windows, compiled by msvc-19.42.34436, 64-bit
+2026-10-04 12:34:38,477 | INFO | smoke | connect | - | done (0.22s)
+2026-10-04 12:48:50,644 | INFO | smoke | connect | - | started
+2026-10-04 12:48:50,644 | INFO | smoke | connect | - | PostgreSQL localhost:5432 db=normtest ssl=off
+2026-10-04 12:48:50,861 | ERROR | smoke | connect | - | connect failed: ScramException: control characters forbidden: invalid-encoding
+2026-10-04 12:48:50,861 | ERROR | smoke | connect | - | failed: INTERNAL_ERROR (0.22s)
+2026-10-04 12:49:06,317 | INFO | smoke | connect | - | started
+2026-10-04 12:49:06,319 | INFO | smoke | connect | - | PostgreSQL localhost:5432 db=normtest ssl=off
+2026-10-04 12:49:06,516 | INFO | smoke | readonly | - | started
+2026-10-04 12:49:06,516 | INFO | smoke | readonly | - | done (0.00s)
+2026-10-04 12:49:06,516 | INFO | smoke | version | - | started
+2026-10-04 12:49:06,516 | INFO | smoke | version | - | done (0.00s)
+2026-10-04 12:49:06,516 | INFO | smoke | version | - | version=PostgreSQL 17.4 on x86_64-windows, compiled by msvc-19.42.34436, 64-bit
+2026-10-04 12:49:06,516 | INFO | smoke | connect | - | done (0.20s)
+2026-10-04 12:49:06,516 | INFO | smoke | list_tables | - | started
+2026-10-04 12:49:06,937 | INFO | smoke | list_tables | - | done (0.42s)
+2026-10-04 12:49:06,937 | INFO | smoke | list_tables | - | tables=29
+2026-10-04 12:49:21,324 | INFO | smoke | connect | - | started
+2026-10-04 12:49:21,326 | INFO | smoke | connect | - | MySQL localhost:3306 db=normtest ssl=off
+2026-10-04 12:49:21,474 | INFO | smoke | readonly | - | started
+2026-10-04 12:49:21,479 | INFO | smoke | readonly | - | done (0.01s)
+2026-10-04 12:49:21,479 | INFO | smoke | version | - | started
+2026-10-04 12:49:21,481 | INFO | smoke | version | - | done (0.00s)
+2026-10-04 12:49:21,481 | INFO | smoke | version | - | version=8.0.41
+2026-10-04 12:49:21,481 | INFO | smoke | connect | - | done (0.16s)
+2026-10-04 12:49:21,481 | INFO | smoke | list_tables | - | started
+2026-10-04 12:49:21,546 | INFO | smoke | list_tables | - | done (0.06s)
+2026-10-04 12:49:21,546 | INFO | smoke | list_tables | - | tables=29

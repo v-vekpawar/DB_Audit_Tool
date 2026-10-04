@@ -43,6 +43,7 @@ def setup_logging() -> logging.Logger:
     fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(scan_id)s | %(step)s | %(table)s | %(message)s")
     # Defaults so format never fails when extras are missing.
     filt = SecretMaskingFilter()
+    logger.addFilter(DefaultContextFilter())
 
     ch = logging.StreamHandler()
     ch.setFormatter(fmt)
@@ -86,6 +87,19 @@ class StepTimer:
         )
         return self
 
+    def __exit__(self, exc_type, exc, tb) -> None:
+        dt = time.monotonic() - self._t0
+        if exc_type is None:
+            get_logger().info(
+                "done (%.2fs)", dt,
+                extra={"scan_id": self.scan_id, "step": self.step, "table": self.table},
+            )
+        else:
+            get_logger().error(
+                "failed: %s (%.2fs)", exc, dt,
+                extra={"scan_id": self.scan_id, "step": self.step, "table": self.table},
+            )
+
     def ok(self, detail: str = "ok") -> float:
         dt = time.monotonic() - self._t0
         get_logger().info(
@@ -103,22 +117,14 @@ class StepTimer:
         return dt
 
 
-def _bind_defaults() -> None:
-    """Ensure old records without extras still format (tests use bare asserts)."""
-    logger = logging.getLogger("dbnorm")
-    old_factory = logging.getLogRecordFactory()
+class DefaultContextFilter(logging.Filter):
+    """Fills scan_id/step/table defaults when a call site omits them."""
 
-    def factory(*args, **kwargs):
-        record = old_factory(*args, **kwargs)
+    def filter(self, record: logging.LogRecord) -> bool:
         if not hasattr(record, "scan_id"):
             record.scan_id = "-"
         if not hasattr(record, "step"):
             record.step = "-"
         if not hasattr(record, "table"):
             record.table = "-"
-        return record
-
-    logging.setLogRecordFactory(factory)
-
-
-_bind_defaults()
+        return True
