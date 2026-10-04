@@ -1,10 +1,10 @@
-"""Compare a scan result against expected_verdicts.json (M1 acceptance).
+"""Compare scan results against expected_verdicts.json (M1 acceptance).
 
 Usage:
-  python scripts/testdb/check_verdicts.py result-mysql.json result-pg.json
+  python scripts/testdb/check_verdicts.py result-mysql.json result-pg.json [result-oracle.json]
 
 Exit 0 when recall is 100%, precision is 100% (zero false faulted) and
-both engines agree table by table.
+all engines agree table by table.
 Stdlib only.
 """
 
@@ -117,11 +117,15 @@ def main(paths):
               % (recall, precision, missed, false_f))
         summaries.append((path, rows))
         all_ok &= (recall == 1.0 and precision == 1.0)
-    if len(summaries) == 2:
-        ra = verdicts_of(load_result(summaries[0][0]))
-        rb = verdicts_of(load_result(summaries[1][0]))
-        diff = [n for n in ra if (ra[n].get("status"), ra[n].get("normal_form"))
-                != (rb.get(n, {}).get("status"), rb.get(n, {}).get("normal_form"))]
+    if len(summaries) >= 2:
+        verdicts = [(path, verdicts_of(load_result(path))) for path, _ in summaries]
+        base_path, base = verdicts[0]
+        diff = []
+        for path, other in verdicts[1:]:
+            for n in base:
+                if (base[n].get("status"), base[n].get("normal_form")) != (
+                        other.get(n, {}).get("status"), other.get(n, {}).get("normal_form")):
+                    diff.append("%s: %s vs %s" % (n, base_path, path))
         print("cross-engine parity:", "OK" if not diff else "DIFF %s" % diff)
         all_ok &= not diff
     print("RESULT:", "ALL OK" if all_ok else "FAILURES PRESENT")

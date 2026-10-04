@@ -232,6 +232,17 @@ def map_exception(exc: BaseException, step: str = "connect",
         return make_error("DB_UNREACHABLE", step=step, scan_id=scan_id)
 
     msg = str(exc).lower()
+    if "ora-01017" in msg:
+        return make_error("DB_AUTH_FAILED", step=step, scan_id=scan_id)
+    if "ora-12170" in msg:
+        return make_error("DB_TIMEOUT", step=step, scan_id=scan_id)
+    if "ora-00942" in msg:
+        return make_error("TABLE_NOT_FOUND", step=step, scan_id=scan_id)
+    if "ora-01031" in msg:
+        return make_error("TABLE_PERMISSION_DENIED", step=step, scan_id=scan_id)
+    if any(c in msg for c in ("ora-12514", "ora-12541", "ora-12545",
+                              "ora-12535", "ora-12154", "dpy-6001")):
+        return make_error("DB_UNREACHABLE", step=step, scan_id=scan_id)
     if "unknown table" in msg or "no such table" in msg or "1146" in msg \
             or "42p01" in msg or ('relation' in msg and "does not exist" in msg):
         return make_error("TABLE_NOT_FOUND", step=step, scan_id=scan_id)
@@ -306,13 +317,19 @@ def connect(p: ConnectParams, scan_id: str = "-", require_db: bool = True):
             try:
                 version = str(conn.execute(sa_text(VERSION_SQL[t])).scalar())
             except Exception as e:
-                log.error("version failed: %s: %s", type(e).__name__, e,
-                          extra={"scan_id": scan_id, "step": "version", "table": "-"})
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-                raise ConnectError(map_exception(e, step="version", scan_id=scan_id)) from e
+                if t == "oracle":
+                    # v$version needs privileges a least-privilege account
+                    # may lack; the version string is display-only.
+                    log.warning("version unreadable, continuing as unknown: %s",
+                                e, extra={"scan_id": scan_id, "step": "version",
+                                          "table": "-"})
+                    version = "unknown"
+                else:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    raise ConnectError(map_exception(e, step="version", scan_id=scan_id)) from e
         log.info("version=%s", version.split("\n")[0][:80],
                  extra={"scan_id": scan_id, "step": "version", "table": "-"})
         return engine, conn, version

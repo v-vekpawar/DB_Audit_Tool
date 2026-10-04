@@ -37,7 +37,10 @@ def effective_schema(db_type: str, schema: str | None) -> str | None:
     if t == "postgresql":
         return schema or "public"
     if t == "oracle":
-        return schema  # owner selection; required from step 13 on
+        # Oracle owners are conventionally uppercase; the inspector
+        # matches them exactly, so normalise (quoted-lowercase owners
+        # are vanishingly rare on real targets).
+        return (schema or "").upper() or None
     return None  # mysql: current database
 
 

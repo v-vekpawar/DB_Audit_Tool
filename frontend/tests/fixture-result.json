@@ -1,0 +1,117 @@
+{
+  "tables": [
+    {
+      "name": "t_3nf_transitive", "status": "faulted", "normal_form": "2NF",
+      "sampled": false,
+      "columns": [
+        {"name": "order_id", "type": "INT", "pk": true, "fk": null},
+        {"name": "customer_id", "type": "INT", "pk": false, "fk": null},
+        {"name": "customer_name", "type": "VARCHAR(20)", "pk": false, "fk": null},
+        {"name": "qty", "type": "INT", "pk": false, "fk": null}
+      ],
+      "violations": [
+        {"form": "3NF", "kind": "transitive", "determinant": ["customer_id"],
+         "dependents": ["customer_name"],
+         "reason": "customer_name depends on customer_id, not on the key (order_id)."}
+      ],
+      "fds": [
+        {"determinant": ["customer_id"], "dependent": "customer_name",
+         "kind": "exact", "equivalent": false, "confidence": 96,
+         "tier": "strong", "exceptions": 0,
+         "coincidence": {"exponent": 48.2, "text": "1 in 10^48"},
+         "evidence": {"distinct_det": 34, "repeated_rows": 266,
+                      "candidates_tested": 1575, "naming": true,
+                      "cross_table": {"supported": true, "ref_table": "customers_ref",
+                                      "ref_column": "customer_name", "match_rate": 0.984},
+                      "examples": [{"det": [17], "dep": "Acme", "rows": 14}]},
+         "recommendation": ""}
+      ],
+      "recommendation": "Move customer_name into a separate table keyed by customer_id and keep customer_id as a foreign key in t_3nf_transitive."
+    },
+    {
+      "name": "t_2nf_partial", "status": "faulted", "normal_form": "1NF",
+      "sampled": false,
+      "columns": [
+        {"name": "order_id", "type": "INT", "pk": true, "fk": null},
+        {"name": "product_id", "type": "INT", "pk": true, "fk": null},
+        {"name": "product_name", "type": "VARCHAR(20)", "pk": false, "fk": null}
+      ],
+      "violations": [
+        {"form": "2NF", "kind": "partial", "determinant": ["product_id"],
+         "dependents": ["product_name"],
+         "reason": "product_name depends on product_id, which is only part of the key (order_id, product_id)."}
+      ],
+      "fds": [
+        {"determinant": ["product_id"], "dependent": "product_name",
+         "kind": "near", "equivalent": false, "confidence": 88,
+         "tier": "strong", "exceptions": 2,
+         "coincidence": {"exponent": 12.4, "text": "1 in 10^12"},
+         "evidence": {"distinct_det": 50, "repeated_rows": 250,
+                      "candidates_tested": 792, "naming": true,
+                      "cross_table": null,
+                      "examples": [{"det": [3], "dep": "Widget", "rows": 6},
+                                   {"det": [3], "dep": "Wodget", "rows": 1, "exception": true}]},
+         "recommendation": ""}
+      ],
+      "recommendation": "Move product_name into a table keyed by product_id; it depends on only part of the key."
+    },
+    {
+      "name": "t_1nf_delimited", "status": "faulted", "normal_form": "below 1NF",
+      "sampled": false,
+      "columns": [
+        {"name": "order_id", "type": "INT", "pk": true, "fk": null},
+        {"name": "tags", "type": "VARCHAR(60)", "pk": false, "fk": null}
+      ],
+      "violations": [
+        {"form": "1NF", "kind": "delimited", "determinant": [],
+         "dependents": ["tags"],
+         "reason": "Column tags holds comma-separated lists in 70% of its non-null values."}
+      ],
+      "fds": [],
+      "recommendation": "Store each value of tags in its own row of a child table instead of a comma-separated list."
+    },
+    {
+      "name": "t_1nf_repeating", "status": "faulted", "normal_form": "below 1NF",
+      "sampled": false,
+      "columns": [
+        {"name": "cust_id", "type": "INT", "pk": true, "fk": null},
+        {"name": "phone1", "type": "VARCHAR(16)", "pk": false, "fk": null},
+        {"name": "phone2", "type": "VARCHAR(16)", "pk": false, "fk": null},
+        {"name": "<script>alert(1)</script>", "type": "VARCHAR(16)", "pk": false, "fk": null}
+      ],
+      "violations": [
+        {"form": "1NF", "kind": "repeating", "determinant": [],
+         "dependents": ["phone1", "phone2"],
+         "reason": "Columns phone1, phone2 form a repeating group."}
+      ],
+      "fds": [],
+      "recommendation": "Replace phone1, phone2 with a child table holding one phone per row."
+    },
+    {
+      "name": "t_suspected", "status": "suspected", "normal_form": "2NF",
+      "sampled": true,
+      "columns": [
+        {"name": "id", "type": "INT", "pk": true, "fk": null},
+        {"name": "country_code", "type": "VARCHAR(8)", "pk": false,
+         "fk": {"table": "countries", "column": "code"}},
+        {"name": "country_name", "type": "VARCHAR(20)", "pk": false, "fk": null}
+      ],
+      "violations": [
+        {"form": "3NF", "kind": "transitive", "determinant": ["country_code"],
+         "dependents": ["country_name"],
+         "reason": "country_name depends on country_code, not on the key (id)."}
+      ],
+      "fds": [
+        {"determinant": ["country_code"], "dependent": "country_name",
+         "kind": "exact", "equivalent": true, "confidence": 62,
+         "tier": "suspected", "exceptions": 0,
+         "coincidence": {"exponent": 3.4, "text": "1 in 2,512"},
+         "evidence": {"distinct_det": 12, "repeated_rows": 48,
+                      "candidates_tested": 420, "naming": false,
+                      "cross_table": null, "examples": []},
+         "recommendation": ""}
+      ],
+      "recommendation": "country_code and country_name are equivalent columns; keep one as the key of a lookup table."
+    }
+  ]
+}

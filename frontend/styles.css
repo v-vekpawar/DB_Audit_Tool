@@ -434,43 +434,21 @@ input:focus-visible {
   padding-left: 20px;
 }
 
-/* Simple faulted-table block (Step 10). Step 11 replaces these with
-   full SVG graph cards rendered into the same container and ids. */
+/* Faulted-table graph cards (Step 11): SVG rendered by app.js. */
 
-.card-simple {
+.card-svg {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-left: 4px solid var(--danger);
   border-radius: var(--radius);
-  padding: 14px 16px;
-  margin-bottom: 16px;
+  padding: 12px;
+  margin-bottom: 20px;
+  overflow-x: auto;
 }
 
-.card-simple.suspected {
-  border-left-color: var(--warning);
-  opacity: 0.85;
-}
-
-.card-simple h3 {
-  margin: 0 0 8px;
-  font-size: 1.05rem;
-  font-family: var(--font-mono);
-}
-
-.card-simple .reason,
-.card-simple .recommendation {
-  margin: 8px 0;
-  font-size: 0.9rem;
-}
-
-.card-simple .recommendation {
-  color: var(--ink-muted);
-}
-
-.card-simple ul.fd-list {
-  margin: 8px 0;
-  padding-left: 20px;
-  font-size: 0.85rem;
+.card-svg svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
 }
 
 /* --- Last scan summary --- */

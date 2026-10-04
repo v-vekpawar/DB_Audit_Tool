@@ -19,17 +19,6 @@ LIVE = os.environ.get("NORMTEST_LIVE", "").strip() == "1"
 needs_live = pytest.mark.skipif(not LIVE, reason="needs live test DBs")
 
 
-@pytest.fixture()
-def client(tmp_path, monkeypatch):
-    monkeypatch.setattr(storage, "DB_PATH", tmp_path / "last.sqlite")
-    sessions._sessions.clear()
-    sessions._current_id = None
-    with TestClient(app) as c:
-        yield c
-    sessions._sessions.clear()
-    sessions._current_id = None
-
-
 FAKE_RESULT = {
     "scan": {"id": "x", "status": "completed", "selected_tables": ["a"],
              "counts": {"faulted": 1, "clean": 0}},

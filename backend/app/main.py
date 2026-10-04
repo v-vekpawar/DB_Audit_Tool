@@ -246,6 +246,46 @@ def api_current():
             "tables": list(session.selected)}
 
 
+@app.get("/api/scan/{scan_id}/export")
+def api_export(scan_id: str, format: str = "pdf"):
+    from fastapi.responses import Response
+
+    from .errors import http_status
+    if format != "pdf":
+        err = make_error("VALIDATION_ERROR", step="export", scan_id=scan_id,
+                         detail="format must be pdf")["error"]
+        return JSONResponse(status_code=http_status("VALIDATION_ERROR"),
+                            content={"error": err})
+    session = scan_sessions.get_session(scan_id)
+    result = session.result if session is not None else None
+    if result is None:
+        try:
+            from .storage import load_last_scan
+            stored = load_last_scan()
+        except Exception:
+            stored = None
+        if stored and (stored.get("scan") or {}).get("id") == scan_id:
+            result = stored
+    if result is None:
+        if session is not None:
+            result = session.partial_result()
+        else:
+            return _err("SCAN_NOT_FOUND", "export", scan_id)
+    try:
+        from .export_pdf import build_pdf
+        pdf = build_pdf(result)
+    except Exception as e:
+        get_logger().error("export failed: %s: %s", type(e).__name__, e,
+                           extra={"scan_id": scan_id, "step": "export",
+                                  "table": "-"})
+        return _err("EXPORT_FAILED", "export", scan_id)
+    get_logger().info("export pdf bytes=%d", len(pdf),
+                      extra={"scan_id": scan_id, "step": "export", "table": "-"})
+    return Response(content=pdf, media_type="application/pdf",
+                    headers={"Content-Disposition":
+                             "attachment; filename=dbnorm-%s.pdf" % scan_id})
+
+
 @app.get("/api/scan/last")
 def api_last():
     try:

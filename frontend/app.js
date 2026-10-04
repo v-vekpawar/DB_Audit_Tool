@@ -90,6 +90,218 @@ function formatScanTime(stamp) {
   return dated.toLocaleString();
 }
 
+/** Renders an ISO timestamp in local time. Garbage passes through. Pure. */
+function formatScanTime(stamp) {
+  if (!stamp) return "—";
+  const dated = new Date(String(stamp));
+  if (Number.isNaN(dated.getTime())) return String(stamp);
+  return dated.toLocaleString();
+}
+
+/** XML-escapes a value for SVG text. Pure. */
+function esc(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/** Greedy word wrap to ~maxChars columns. Pure — Node-tested. */
+function wrapText(s, maxChars) {
+  const words = String(s || "").split(/\s+/).filter(Boolean);
+  const lines = [];
+  let line = "";
+  for (const w of words) {
+    if ((line + " " + w).trim().length > maxChars && line) {
+      lines.push(line);
+      line = w;
+    } else {
+      line = (line + " " + w).trim();
+    }
+  }
+  if (line) lines.push(line);
+  return lines.length > 0 ? lines : [""];
+}
+
+const SVG_COLORS = {
+  ink: "#1c211d",
+  muted: "#5c655e",
+  border: "#d7dbd2",
+  accent: "#2f4b8f",
+  accentSoft: "#e3e9f6",
+  danger: "#a3291f",
+  dangerSoft: "#f6e4e2",
+  warning: "#8a5a00",
+  warningSoft: "#f6ecd9",
+};
+const SVG_SANS = "system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
+const SVG_MONO = "ui-monospace, Menlo, Consolas, monospace";
+
+/**
+ * Builds the full graph-like faulted-table card as an SVG string.
+ * `full`: table result (columns, violations, fds, recommendation, sampled).
+ * `status`: "faulted" | "suspected" (suspected renders dimmed).
+ * Pure — Node-tested against a fixture covering every violation kind.
+ */
+function buildCardSVG(name, full, status) {
+  const C = SVG_COLORS;
+  const W = 760;
+  const pad = 16;
+  const rowH = 24;
+  const suspected = status === "suspected";
+  const nf = (suspected ? "possibly " : "") + (full.normal_form || "?");
+  const badgeColor = suspected ? C.warning : C.danger;
+  const badgeSoft = suspected ? C.warningSoft : C.dangerSoft;
+
+  const detCols = new Set();
+  const depCols = new Set();
+  const equivCols = new Set();
+  const detGroups = []; // {key, det:[cols], deps:[cols], equiv}
+  for (const f of full.fds || []) {
+    let g = detGroups.find((x) => x.key === f.determinant.join("\0"));
+    if (!g) {
+      g = { key: f.determinant.join("\0"), det: f.determinant, deps: [],
+        equiv: false };
+      detGroups.push(g);
+    }
+    if (!g.deps.includes(f.dependent)) g.deps.push(f.dependent);
+    g.equiv = g.equiv || !!f.equivalent;
+    for (const d of f.determinant) detCols.add(d);
+    depCols.add(f.dependent);
+    if (f.equivalent) {
+      for (const d of f.determinant) equivCols.add(d);
+      equivCols.add(f.dependent);
+    }
+  }
+
+  let h = 0;
+  const parts = [];
+  const open = suspected
+    ? `<svg width="${W}" viewBox="0 0 ${W} PLACEHOLDER" font-family="${SVG_SANS}" role="img" aria-label="${esc(name)} card"><g opacity="0.72">`
+    : `<svg width="${W}" viewBox="0 0 ${W} PLACEHOLDER" font-family="${SVG_SANS}" role="img" aria-label="${esc(name)} card"><g>`;
+  parts.push(open);
+  h += 12;
+  // Header.
+  parts.push(`<text x="${pad}" y="${h + 20}" font-size="16" font-weight="600" font-family="${SVG_MONO}" fill="${C.ink}">${esc(name)}</text>`);
+  const badgeW = 12 + nf.length * 7.2;
+  parts.push(`<rect x="${W - pad - badgeW}" y="${h + 4}" width="${badgeW}" height="24" rx="12" fill="${badgeSoft}"/>`);
+  parts.push(`<text x="${W - pad - badgeW / 2}" y="${h + 21}" font-size="12" font-weight="600" text-anchor="middle" fill="${badgeColor}">${esc(nf)}</text>`);
+  h += 40;
+  if (full.sampled) {
+    parts.push(`<text x="${pad}" y="${h + 4}" font-size="12" fill="${C.muted}">analysed first 50,000 rows in key order (sampled)</text>`);
+    h += 20;
+  }
+  // Column rows.
+  const y0 = h + 8;
+  const cy = (i) => y0 + i * rowH + 15;
+  const cols = full.columns || [];
+  cols.forEach((col, i) => {
+    const y = y0 + i * rowH;
+    if (depCols.has(col.name)) {
+      parts.push(`<rect x="8" y="${y}" width="${W - 16}" height="22" rx="4" fill="${C.dangerSoft}"/>`);
+    }
+    let x = 76;
+    if (col.pk) {
+      parts.push(`<rect x="${x}" y="${y + 3}" width="26" height="16" rx="8" fill="${C.accent}"/>`);
+      parts.push(`<text x="${x + 13}" y="${y + 16}" font-size="10" font-weight="700" text-anchor="middle" fill="#ffffff">PK</text>`);
+      x += 30;
+    }
+    if (col.fk) {
+      parts.push(`<rect x="${x}" y="${y + 3}" width="26" height="16" rx="8" fill="none" stroke="${C.accent}" stroke-width="1.5"/>`);
+      parts.push(`<text x="${x + 13}" y="${y + 16}" font-size="10" font-weight="700" text-anchor="middle" fill="${C.accent}">FK</text>`);
+      x += 30;
+    }
+    const bold = detCols.has(col.name) ? ' font-weight="700"' : "";
+    parts.push(`<text x="${x}" y="${y + 16}" font-size="13" font-family="${SVG_MONO}" fill="${C.ink}"${bold}>${esc(col.name)}</text>`);
+    let tx = x + col.name.length * 7.8 + 8;
+    if (detCols.has(col.name)) {
+      parts.push(`<rect x="${tx}" y="${y + 3}" width="32" height="16" rx="8" fill="none" stroke="${C.muted}" stroke-width="1"/>`);
+      parts.push(`<text x="${tx + 16}" y="${y + 16}" font-size="10" text-anchor="middle" fill="${C.muted}">DET</text>`);
+      tx += 36;
+    }
+    if (equivCols.has(col.name)) {
+      parts.push(`<rect x="${tx}" y="${y + 3}" width="28" height="16" rx="8" fill="none" stroke="${C.muted}" stroke-width="1"/>`);
+      parts.push(`<text x="${tx + 14}" y="${y + 16}" font-size="10" text-anchor="middle" fill="${C.muted}">EQ</text>`);
+    }
+  });
+  const colBlockH = cols.length * rowH;
+  // Arrows in the gutter (x 8..64): one spine per determinant.
+  detGroups.forEach((g, gi) => {
+    const sx = 52 - Math.min(gi, 3) * 13;
+    const involved = [];
+    cols.forEach((col, i) => {
+      if (g.det.includes(col.name) || g.deps.includes(col.name)) involved.push(i);
+    });
+    if (involved.length < 2) return;
+    const top = cy(involved[0]);
+    const bottom = cy(involved[involved.length - 1]);
+    const color = C.danger;
+    const markers = g.equiv
+      ? ` marker-start="url(#arrEq)" marker-end="url(#arrEq)"`
+      : ` marker-end="url(#arr)"`;
+    parts.push(`<line x1="${sx}" y1="${top}" x2="${sx}" y2="${bottom}" stroke="${color}" stroke-width="2"${markers}/>`);
+    cols.forEach((col, i) => {
+      if (g.det.includes(col.name)) {
+        parts.push(`<line x1="${sx}" y1="${cy(i)}" x2="68" y2="${cy(i)}" stroke="${C.accent}" stroke-width="2"/>`);
+      } else if (g.deps.includes(col.name)) {
+        parts.push(`<line x1="${sx}" y1="${cy(i)}" x2="68" y2="${cy(i)}" stroke="${color}" stroke-width="1.5"/>`);
+      }
+    });
+  });
+  h = y0 + colBlockH + 12;
+  // Evidence boxes, one per FD.
+  for (const f of full.fds || []) {
+    const ev = f.evidence || {};
+    const lines = [];
+    lines.push(`Confidence Score: ${f.confidence} (chance of coincidence about ${((f.coincidence && f.coincidence.text) || "—")})`);
+    lines.push(`${ev.distinct_det ?? "—"} distinct values · ${ev.repeated_rows ?? "—"} repeated rows · ${ev.candidates_tested ?? "—"} candidates tested`);
+    if ((f.exceptions || 0) > 0) {
+      lines.push(`${f.exceptions} exception rows (marked below) — holds with exceptions`);
+    }
+    const cross = ev.cross_table;
+    if (cross && cross.supported) {
+      const pct = cross.match_rate != null ? (cross.match_rate * 100).toFixed(1) : "—";
+      lines.push(`supported by ${cross.ref_table}.${cross.ref_column}: ${pct}% match`);
+    }
+    if (ev.naming) {
+      lines.push(`naming affinity: ${(f.determinant || []).join(", ")} / ${f.dependent}`);
+    }
+    for (const ex of (ev.examples || []).slice(0, 3)) {
+      const detVals = (ex.det || []).map((v) => String(v).slice(0, 24)).join(", ");
+      lines.push(`e.g. ${detVals} → ${String(ex.dep).slice(0, 24)} in ${ex.rows} rows${ex.exception ? " (exception)" : ""}`);
+    }
+    const boxH = 12 + (lines.length + 1) * 17 + 10;
+    parts.push(`<rect x="${pad}" y="${h}" width="${W - pad * 2}" height="${boxH}" rx="4" fill="#ffffff" stroke="${C.border}" stroke-width="1"/>`);
+    parts.push(`<text x="${pad + 10}" y="${h + 19}" font-size="12" font-weight="600" fill="${C.ink}">${esc((f.determinant || []).join(", "))} → ${esc(f.dependent)}${f.equivalent ? " (equivalent)" : ""}</text>`);
+    lines.forEach((ln, li) => {
+      parts.push(`<text x="${pad + 10}" y="${h + 19 + (li + 1) * 17}" font-size="12" fill="${C.ink}">${esc(ln)}</text>`);
+    });
+    h += boxH + 10;
+  }
+  // Reason + recommendation boxes.
+  const boxes = [];
+  for (const v of full.violations || []) {
+    if (v.reason) boxes.push({ title: "Why this fails " + v.form + ": ", body: v.reason, fill: C.warningSoft });
+  }
+  if (full.recommendation) {
+    boxes.push({ title: "Recommendation: ", body: full.recommendation, fill: C.accentSoft });
+  }
+  for (const b of boxes) {
+    const lines = wrapText(b.title + b.body, 100);
+    const boxH = 12 + lines.length * 17 + 10;
+    parts.push(`<rect x="${pad}" y="${h}" width="${W - pad * 2}" height="${boxH}" rx="4" fill="${b.fill}"/>`);
+    lines.forEach((ln, li) => {
+      parts.push(`<text x="${pad + 10}" y="${h + 19 + li * 17}" font-size="12" fill="${C.ink}">${esc(ln)}</text>`);
+    });
+    h += boxH + 10;
+  }
+  h += 4;
+  parts.push(`<defs><marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6" fill="none" stroke="${C.danger}" stroke-width="1.5"/></marker><marker id="arrEq" markerWidth="8" markerHeight="8" refX="3" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 M6,0 L0,3 L6,6" fill="none" stroke="${C.danger}" stroke-width="1.2"/></marker></defs>`);
+  parts.push(`</g></svg>`);
+  return parts.join("\n").replace("PLACEHOLDER", String(h));
+}
+
 /**
  * The live time line. `st` shape:
  *   { done, selected, elapsedSeconds, remainingSeconds, totalSeconds,
@@ -173,6 +385,9 @@ const logic = {
   statusBadge,
   formatError,
   formatScanTime,
+  esc,
+  wrapText,
+  buildCardSVG,
 };
 
 if (typeof module !== "undefined" && module.exports) {
@@ -230,6 +445,8 @@ function initApp() {
     resultsSection: document.getElementById("results-section"),
     resultsHeadline: document.getElementById("results-headline"),
     exportRow: document.getElementById("export-row"),
+    exportPdfBtn: document.getElementById("export-pdf-btn"),
+    exportStatus: document.getElementById("export-status"),
     notices: document.getElementById("notices"),
     cards: document.getElementById("cards"),
   };
@@ -758,6 +975,8 @@ function initApp() {
     if (els.resultsSection.hidden) return;
     els.resultsHeadline.textContent =
       logic.formatHeadline(counts, finishedCount(), selected, notSelected);
+    const terminal = state.scanStatus === "completed" || state.scanStatus === "stopped";
+    els.exportRow.hidden = !(terminal && state.scanId);
     // Tables that could not be analysed.
     const errs = [...state.statuses.entries()]
       .filter(([, st]) => st.state === "error");
@@ -789,40 +1008,14 @@ function initApp() {
     }
   }
 
-  // Simple Step-10 card. Step 11 replaces this renderer with full SVG
-  // graph cards (same container, same `card-<name>` ids).
+  // Full SVG graph card (Step 11). Same container and `card-<name>` ids
+  // as the Step-10 placeholder, so status-row click-to-scroll is unchanged.
   function renderSimpleCard(name, full) {
     const st = state.statuses.get(name) || {};
     const article = document.createElement("article");
-    article.className = "card-simple" + (st.state === "suspected" ? " suspected" : "");
+    article.className = "card-svg" + (st.state === "suspected" ? " suspected" : "");
     article.id = `card-${name}`;
-    const h = document.createElement("h3");
-    h.textContent = name;
-    article.appendChild(h);
-    const nf = document.createElement("span");
-    nf.className = "badge badge-nf";
-    nf.textContent = (st.state === "suspected" ? "possibly " : "") + (full.normal_form || "?");
-    article.appendChild(nf);
-    const ul = document.createElement("ul");
-    ul.className = "fd-list mono";
-    for (const f of full.fds || []) {
-      const li = document.createElement("li");
-      li.textContent = `${f.determinant.join(", ")} → ${f.dependent} (score ${f.confidence})`;
-      ul.appendChild(li);
-    }
-    article.appendChild(ul);
-    for (const v of full.violations || []) {
-      const p = document.createElement("p");
-      p.className = "reason";
-      p.textContent = v.reason || "";
-      article.appendChild(p);
-    }
-    if (full.recommendation) {
-      const p = document.createElement("p");
-      p.className = "recommendation";
-      p.textContent = full.recommendation;
-      article.appendChild(p);
-    }
+    article.innerHTML = logic.buildCardSVG(name, full, st.state === "suspected" ? "suspected" : "faulted");
     return article;
   }
 
@@ -900,6 +1093,36 @@ function initApp() {
       els.resultsSection.hidden = false;
       els.resultsSection.scrollIntoView();
     } catch (e) { /* shown */ }
+  });
+
+  els.exportPdfBtn.addEventListener("click", async () => {
+    clearError();
+    if (!state.scanId) return;
+    els.exportStatus.textContent = "Generating…";
+    try {
+      const resp = await fetch(`/api/scan/${state.scanId}/export?format=pdf`);
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => null);
+        showError((data && data.error) || { message: `Export failed (${resp.status}).` });
+        els.exportStatus.textContent = "";
+        return;
+      }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `dbnorm-${state.scanId}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      els.exportStatus.textContent = "";
+    } catch (e) {
+      showError({ code: "BACKEND_UNREACHABLE",
+        message: "Cannot reach the tool's backend.", step: "export",
+        scan_id: state.scanId });
+      els.exportStatus.textContent = "";
+    }
   });
 
   // ---------- reload re-attach + global guards
