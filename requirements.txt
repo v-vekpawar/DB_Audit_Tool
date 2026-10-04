@@ -5,10 +5,9 @@ fastapi==0.115.0
 uvicorn==0.30.6
 pydantic==2.9.2
 reportlab==4.2.5
-# Norm-tool-only deps (unpinned until the offline wheel set is verified,
-# then freeze with: pip freeze > frozen.txt):
-sqlalchemy
-pymysql
-cryptography
-pg8000
-oracledb
+# Norm-tool-only deps (pinned from the verified wheel set, 2026-10-04).
+sqlalchemy==2.1.3
+pymysql==1.2.3
+cryptography==50.0.2
+pg8000==1.31.5
+oracledb==26.0.1

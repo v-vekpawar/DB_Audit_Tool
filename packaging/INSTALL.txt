@@ -1,0 +1,29 @@
+DB Normalization Checker — offline install (vm1, no internet)
+
+Requirements: Windows 64-bit, Python 3.12.10 (python --version),
+network reach from vm1 to the target database port.
+
+1. Copy this folder to a working folder, e.g. C:\tools\dbnorm.
+2. Open PowerShell in that folder:
+
+   python --version
+   python -m venv venv
+   venv\Scripts\activate
+   pip install --no-index --find-links wheels -r requirements.txt
+
+3. Smoke test:
+
+   python -c "import fastapi, sqlalchemy, pymysql, pg8000, oracledb, reportlab; print('ok')"
+   cd backend
+   uvicorn app.main:app --port 8770
+
+4. Open http://127.0.0.1:8770/ in the browser inside the remote
+   desktop session (a venv keeps other tools' packages untouched).
+
+Reachability check before the first scan:
+
+  Test-NetConnection <target_ip> -Port <db_port>
+
+MySQL 8 default auth needs the bundled `cryptography` wheel; Oracle
+needs nothing extra (thin mode, no client). The last-scan database
+file lives next to the backend; keep or delete it as needed.

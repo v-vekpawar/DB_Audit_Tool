@@ -304,5 +304,6 @@ db-norm-tool/
 | `docs/BUILD_PLAN.md` | Phases, milestones, deliverables, risks, definition of done |
 | `docs/BUILD_ORDER.md` | Step-by-step build sequence with checkpoints |
 | `docs/TEST_PLAN.md` | Planted-defect test databases, metrics, per-engine setup |
+| `docs/OPERATOR_GUIDE.md` | Short operator guide for vm1 (accounts, reachability, reading results) |
 | `docs/OFFLINE_PACKAGING.md` | Wheel list, build, verify, ISO, install |
  

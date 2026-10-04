@@ -199,6 +199,39 @@ def test_stop_mid_scan_keeps_partial(client, monkeypatch):
     assert res["scan"]["counts"]["not_run"] == 1
 
 
+def test_progress_replay_since(client, monkeypatch):
+    import json as _json
+    import time as _time
+
+    def fake(params, selected, schema=None, scan_id="s", on_event=None,
+             stop_event=None, max_rows=50000):
+        (on_event or (lambda e: None))({"event": "scan_started",
+                                        "tables": ["a"], "total": 1})
+        (on_event or (lambda e: None))({"event": "table_done", "table": "a",
+                                        "status": "clean",
+                                        "normal_form": "BCNF",
+                                        "duration_seconds": 0.0,
+                                        "result": None})
+        (on_event or (lambda e: None))({"event": "scan_done",
+                                        "status": "completed", "counts": {}})
+        return {"scan": {"id": scan_id, "status": "completed"},
+                "table_summary": [], "tables": [], "notices": []}
+
+    monkeypatch.setattr(sessions, "analyze_db", fake)
+    sid = client.post("/api/scan/start", json={"db_type": "mysql",
+                                               "host": "localhost",
+                                               "database": "x",
+                                               "tables": ["a"]}).json()["scan_id"]
+    for _ in range(100):
+        if client.get("/api/scan/%s/results" % sid).json()["scan"]["status"] == "completed":
+            break
+        _time.sleep(0.05)
+    with client.stream("GET", "/api/scan/%s/progress?since=1" % sid) as s:
+        seqs = [_json.loads(line.split("data: ", 1)[1])["seq"]
+                for line in s.iter_lines() if line.startswith("data: ")]
+    assert seqs == [2, 3], seqs
+
+
 def test_scan_thread_crash_is_failed_scan(client, monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("forced")

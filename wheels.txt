@@ -1,0 +1,30 @@
+﻿
+Name                                              Length
+----                                              ------
+annotated_types-0.8.0-py3-none-any.whl             13427
+anyio-4.15.1-py3-none-any.whl                     132079
+asn1crypto-1.5.1-py2.py3-none-any.whl             105045
+cffi-2.1.1-cp312-cp312-win_amd64.whl              185919
+chardet-7.6.0-cp312-cp312-win_amd64.whl          1160778
+click-8.5.0-py3-none-any.whl                      125251
+cryptography-50.0.2-cp311-abi3-win_amd64.whl     3824692
+fastapi-0.115.0-py3-none-any.whl                   94625
+h11-0.16.0-py3-none-any.whl                        37515
+idna-3.20-py3-none-any.whl                         69583
+oracledb-26.0.1-cp312-cp312-win_amd64.whl        1970972
+pg8000-1.31.5-py3-none-any.whl                     57816
+pillow-12.3.0-cp312-cp312-win_amd64.whl          7227137
+pycparser-3.0-py3-none-any.whl                     48172
+pydantic-2.9.2-py3-none-any.whl                   434928
+pydantic_core-2.23.4-cp312-none-win_amd64.whl    1917992
+pymysql-1.2.3-py3-none-any.whl                     46740
+python_dateutil-2.9.0.post0-py2.py3-none-any.whl  229892
+reportlab-4.2.5-py3-none-any.whl                 1942821
+scramp-1.4.17-py3-none-any.whl                     16131
+six-1.17.0-py2.py3-none-any.whl                    11050
+sqlalchemy-2.1.3-cp312-cp312-win_amd64.whl       2426552
+starlette-0.38.6-py3-none-any.whl                  71451
+typing_extensions-4.16.0-py3-none-any.whl          45571
+uvicorn-0.30.6-py3-none-any.whl                    62835
+
+

@@ -15,6 +15,22 @@ change was needed. `ETA_DEFAULT_SECONDS_PER_UNIT` set to 2e-07 from
 measurement (first estimate 15.1s rough vs 13.4s/12.0s actual).
 Benchmarks: full 29-table suite 12-14s; 55 000-row table 16.5s
 (`numpy` not needed).
+
+Step 13 record (2026-10-04): same planted schema gives identical verdicts
+on MySQL 8.0.41, PostgreSQL 17.4 and Oracle Free 23c in Docker
+(`gvenzl/oracle-free:slim`, `oracle_planted.sql` rendered from the same
+Python row semantics, quoted-lowercase identifiers). Recall 100%,
+precision 100%, 3-way parity: ALL OK. Older Oracle versions stay
+unverified until tried on a real target.
+
+Step 17 stress record (2026-10-04): Pagila v2.1.0 (PostgreSQL) and Sakila
+(MySQL) scanned as false-positive stress. Two distinct findings, both
+defensible true positives, zero false alarms: `film.special_features`
+(MySQL SET / array holding comma-separated lists — a genuine 1NF
+multi-valued column, reported by design) on both engines, and Sakila
+`rental` `(customer_id, rental_date) -> return_date` (partial, via the
+declared unique key on `(rental_date, inventory_id, customer_id)`).
+No threshold or algorithm change resulted.
  
 ---
  

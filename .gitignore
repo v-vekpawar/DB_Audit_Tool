@@ -20,11 +20,19 @@ frozen.txt
 # Generated test data (recreate with generate_synthetic.py --sweep)
 scripts/testdb/synthetic/
 
-# Offline packaging output (rebuilt per release)
+# Offline packaging output (rebuilt per release; wheels.txt stays tracked)
 wheels/
 dbnorm_package/
-*.iso
-wheels.txt
+dbnorm.iso
+
+# Local test artifacts (regenerable, never commit)
+result-*.json
+frozen.txt
+*-load.log
+pagila-*.sql
+sakila-db.zip
+sakila/
+Chinook*.sql
 
 # OS / editors
 .DS_Store
