@@ -58,14 +58,16 @@ def test_split_columns():
 
 
 def test_code_columns_null_policy():
-    coded, ratios, labels = code_columns({"a": ["x", "y", "x", None, None],
-                                          "b": [1, 1, 1, 1, 1]})
+    cc = code_columns({"a": ["x", "y", "x", None, None],
+                       "b": [1, 1, 1, 1, 1]})
+    coded, ratios, labels, counts = cc.coded, cc.null_ratio, cc.labels, cc.counts
     assert coded["a"][:3] == [coded["a"][0], coded["a"][1], coded["a"][0]]
     assert coded["a"][3] is None and coded["a"][4] is None
     assert ratios["a"] == 0.4 and ratios["b"] == 0.0
     assert len(set(coded["b"])) == 1
     assert labels["a"][coded["a"][0]] == "x"
     assert labels["b"] == [1]
+    assert counts["a"] == [2, 1] and counts["b"] == [5]
 
 
 def test_bounded_count_dialect_shapes():

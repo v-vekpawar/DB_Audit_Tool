@@ -222,17 +222,38 @@ def cust_email_e(cid):
 
 # Table registry -------------------------------------------------------
 TABLES = []
+DECOY_ROWS = {}
 
 
-def table(name, cols, n, exprs, pk_extra="", comment="", from_hook=None):
+def table(name, cols, n, exprs, pk_extra="", comment="", from_hook=None,
+          literal=None):
     TABLES.append({"name": name, "cols": cols, "n": n, "exprs": exprs,
-                   "pk_extra": pk_extra, "comment": comment, "from_hook": from_hook})
+                   "pk_extra": pk_extra, "comment": comment,
+                   "from_hook": from_hook, "literal": literal})
+
+
+def _rng_rows(seed, n, domains, letters):
+    """Truly independent categoricals (seeded). Modular arithmetic shares
+    one driver and correlates columns through joint constraints, so it
+    cannot serve as an independence decoy."""
+    import random
+    rng = random.Random(seed)
+    rows = []
+    for _ in range(n):
+        rows.append(tuple("%s%d" % (letters[k], rng.randrange(domains[k]))
+                          for k in range(len(domains))))
+    return rows
 
 
 def define_tables():
     if TABLES:
         return
     b = IV()
+    DECOY_ROWS["d_coincidence"] = _rng_rows(
+        777, 100, [6, 8, 5, 10, 7, 9, 12], "abcdefg")
+    DECOY_ROWS["d_many_columns"] = _rng_rows(
+        424242, 1000, [7, 9, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 5, 30],
+        "abcdefghjklmnp")
     # ---- 1NF defects ----
     j = J60()
     table("t_1nf_nokey",
@@ -531,17 +552,10 @@ def define_tables():
            ("cat_d", "VARCHAR(8)"), ("cat_e", "VARCHAR(8)"),
            ("cat_f", "VARCHAR(8)"), ("cat_g", "VARCHAR(8)"), ("qty", "INT"),
            ("note_txt", "VARCHAR(60)")],
-          100,
-          [b, concat(S("A"), dmod(b, 7, 97, 9)),
-           concat(S("B"), dmod(b, 11, 89, 7)),
-           concat(S("C"), dmod(b, 13, 83, 11)),
-           concat(S("D"), dmod(b, 17, 79, 13)),
-           case_lt(dmod0(b, 19, 73, 73), 55, S("E1"),
-                   case_lt(dmod0(b, 19, 73, 73), 68, S("E2"), S("E3"))),
-           case_lt(dmod0(b, 23, 71, 71), 60, S("F1"), S("F2")),
-           concat(S("G"), dmod(b, 29, 67, 5)),
-           dmod(b, 31, 61, 5), note_e(b, 37, 59)],
-          comment="d_coincidence: independent skewed categoricals.")
+          100, None,
+          literal=[(i + 1,) + row[:7] + ((i % 5) + 1, "N%d" % ((i % 200) + 1))
+                   for i, row in enumerate(DECOY_ROWS["d_coincidence"])],
+          comment="d_coincidence: independent categoricals (seeded RNG literals).")
 
     table("d_many_columns",
           [("id", "INT PRIMARY KEY"), ("c01", "VARCHAR(8)"),
@@ -552,22 +566,10 @@ def define_tables():
            ("c10", "VARCHAR(8)"), ("c11", "VARCHAR(8)"),
            ("c12", "VARCHAR(8)"), ("c13", "VARCHAR(8)"),
            ("c14", "VARCHAR(8)")],
-          1000,
-          [b, concat(S("a"), dmod(b, 7, 97, 7)),
-           concat(S("b"), dmod(b, 11, 89, 9)),
-           concat(S("c"), dmod(b, 13, 83, 11)),
-           concat(S("d"), dmod(b, 17, 79, 13)),
-           concat(S("e"), dmod(b, 19, 73, 17)),
-           concat(S("f"), dmod(b, 23, 71, 19)),
-           concat(S("g"), dmod(b, 29, 67, 23)),
-           concat(S("h"), dmod(b, 31, 61, 29)),
-           concat(S("i"), dmod(b, 37, 59, 31)),
-           concat(S("j"), dmod(b, 41, 53, 37)),
-           concat(S("k"), dmod(b, 43, 47, 41)),
-           concat(S("l"), dmod(b, 47, 43, 43)),
-           case_lt(dmod0(b, 53, 41, 41), 30, S("m1"), S("m2")),
-           concat(S("n"), dmod(b, 59, 37, 5))],
-          comment="d_many_columns: 15 independent categoricals x 1000 rows.")
+          1000, None,
+          literal=[(i + 1,) + row
+                   for i, row in enumerate(DECOY_ROWS["d_many_columns"])],
+          comment="d_many_columns: 15 independent categoricals x 1000 rows (seeded RNG).")
 
     table("d_nulls",
           [("id", "INT PRIMARY KEY"), ("c1", "VARCHAR(12)"),
@@ -676,8 +678,25 @@ def ddl(table, d):
     return "\n".join(lines)
 
 
+def _lit(v):
+    if v is None:
+        return "NULL"
+    if isinstance(v, str):
+        return "'" + v.replace("'", "''") + "'"
+    return str(v)
+
+
 def insert_sql(table, d):
     n = table["n"]
+    if table.get("literal") is not None:
+        cols = ", ".join(c[0] for c in table["cols"])
+        stmts = []
+        rows = table["literal"]
+        for i in range(0, len(rows), 200):
+            vals = ",\n  ".join("(" + ", ".join(_lit(v) for v in r) + ")"
+                                for r in rows[i:i + 200])
+            stmts.append("INSERT INTO " + table["name"] + " (" + cols + ")\nVALUES\n  " + vals + ";")
+        return "\n".join(stmts)
     exprs = table["exprs"]
     sel = ",\n  ".join(e.sql(d, "j" if table.get("from_hook") == "jblock" else ("i" if d == "my" else "s.i")) for e in exprs)
     if table.get("from_hook") == "jblock":

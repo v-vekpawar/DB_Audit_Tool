@@ -5,6 +5,8 @@ Thresholds, ETA_* constants and the score formula are tuned
 against the test databases (docs/TEST_PLAN.md, build step 8).
 """
 
+from pathlib import Path
+
 SERVER_PORT = 8770
 
 # FD search
@@ -33,8 +35,9 @@ SAMPLED_SCORE_CAP = 85
 # Cross-table
 CROSS_TABLE_MATCH_MIN = 0.97
 
-# Estimator (TODO: tune in build step 8 against measured runs)
-ETA_DEFAULT_SECONDS_PER_UNIT = 5e-06
+# Estimator (validated in build step 8: first estimate 15.1s rough vs
+# 13.4s/12.0s actual on the planted suites — within factor ~1.3)
+ETA_DEFAULT_SECONDS_PER_UNIT = 2e-07
 ETA_PRIOR_UNITS = 100000
 ETA_TICK_SECONDS = 5
 
@@ -45,9 +48,9 @@ STREAM_TIMEOUT_SECONDS = 45
 # Queries
 QUERY_TIMEOUT_SECONDS = 30
 
-# Logging
+# Logging (absolute path: independent of the working directory)
 LOG_LEVEL = "INFO"
-LOG_FILE = "backend/logs/dbnorm.log"
+LOG_FILE = str(Path(__file__).resolve().parent.parent / "logs" / "dbnorm.log")
 LOG_MAX_BYTES = 5 * 1024 * 1024
 LOG_BACKUP_COUNT = 5
 

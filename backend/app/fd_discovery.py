@@ -187,8 +187,11 @@ class _Searcher:
             examined = part.examined
             if not groups:
                 return False
-        # cheap prefilter: Y cannot have more distinct values than X
-        if self.distinct[dep] > len(groups) + (examined - sum(len(g) for g in groups.values())):
+        # cheap prefilter: Y cannot have more distinct values than X.
+        # Near-FDs get slack: each of the at most max_error*n exception
+        # rows can introduce one new Y value (a dirty value inflates Y's
+        # distinct count, so the strict form would prune real near-FDs).
+        if self.distinct[dep] > len(groups) + (examined - sum(len(g) for g in groups.values())) + int(config.NEAR_FD_MAX_ERROR * self.n):
             self.pruned += 1
             return False
         self.tests += 1

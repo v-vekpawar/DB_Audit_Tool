@@ -169,8 +169,9 @@ def _pg_sqlstate(exc: BaseException) -> str | None:
     for a in getattr(exc, "args", ()):
         if isinstance(a, dict) and a.get("C"):
             return str(a["C"])
-    m = re.search(r"\b(28P01|3D000|28000|08001|08004|08006)\b", str(exc))
-    return m.group(1) if m else None
+    m = re.search(r"\b(28P01|3D000|28000|08001|08004|08006|42P01|42501|57014)\b",
+                  str(exc), re.IGNORECASE)
+    return m.group(1).upper() if m else None
 
 
 def map_exception(exc: BaseException, step: str = "connect",
@@ -199,6 +200,12 @@ def map_exception(exc: BaseException, step: str = "connect",
         return make_error("DB_AUTH_FAILED", step=step, scan_id=scan_id)
     if errno == 1049:
         return make_error("DB_NOT_FOUND", step=step, scan_id=scan_id)
+    if errno == 1146:
+        return make_error("TABLE_NOT_FOUND", step=step, scan_id=scan_id)
+    if errno in (1142, 1143):
+        return make_error("TABLE_PERMISSION_DENIED", step=step, scan_id=scan_id)
+    if errno == 3024:
+        return make_error("TABLE_TIMEOUT", step=step, scan_id=scan_id)
     if errno in (2002, 2003, 2005):
         return make_error("DB_UNREACHABLE", step=step, scan_id=scan_id)
     if errno in (2013, 2006):
@@ -213,10 +220,25 @@ def map_exception(exc: BaseException, step: str = "connect",
         return make_error("DB_AUTH_FAILED", step=step, scan_id=scan_id)
     if state == "3D000":
         return make_error("DB_NOT_FOUND", step=step, scan_id=scan_id)
+    if state == "42P01":
+        return make_error("TABLE_NOT_FOUND", step=step, scan_id=scan_id)
+    if state == "42501":
+        return make_error("TABLE_PERMISSION_DENIED", step=step, scan_id=scan_id)
+    if state == "57014":
+        return make_error("TABLE_TIMEOUT", step=step, scan_id=scan_id)
     if state and state.startswith("08"):
         return make_error("DB_UNREACHABLE", step=step, scan_id=scan_id)
 
     msg = str(exc).lower()
+    if "unknown table" in msg or "no such table" in msg or "1146" in msg \
+            or "42p01" in msg or ('relation' in msg and "does not exist" in msg):
+        return make_error("TABLE_NOT_FOUND", step=step, scan_id=scan_id)
+    if "permission denied" in msg or "command denied" in msg or "42501" in msg \
+            or "not authorized" in msg or "insufficient privilege" in msg:
+        return make_error("TABLE_PERMISSION_DENIED", step=step, scan_id=scan_id)
+    if "query execution was interrupted" in msg or "statement timeout" in msg \
+            or "57014" in msg or "3024" in msg:
+        return make_error("TABLE_TIMEOUT", step=step, scan_id=scan_id)
     if "password authentication failed" in msg or "access denied" in msg or "1045" in msg:
         return make_error("DB_AUTH_FAILED", step=step, scan_id=scan_id)
     if "does not exist" in msg or "unknown database" in msg or "1049" in msg:

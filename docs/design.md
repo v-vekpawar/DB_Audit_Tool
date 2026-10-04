@@ -1,9 +1,20 @@
 # Design
- 
+
 Status: agreed scope, ready to build. Updated 2026-10-02: FD detection and
 scoring rewritten (section 6), table selection, live progress and time estimate
 added (sections 9 and 10). Values marked **(tune)** are initial guesses to be
 tuned against the test databases (see `TEST_PLAN.md`).
+
+Step 8 tuning record (2026-10-04, M1): recall 100%, precision 100%
+(zero false faulted), cross-engine parity on all 29 planted tables, with
+every threshold at its default (`STRONG_CONFIDENCE` 75,
+`STRONG_CONFIDENCE_CROSS_TABLE` 60, `SUSPECT_CONFIDENCE` 50,
+`MIN_REPEATED_ROWS` 5, `NEAR_FD_MAX_ERROR` 3%, `NEAR_FD_MIN_GROUP` 3,
+score caps 90/85, `CROSS_TABLE_MATCH_MIN` 97%). No threshold or formula
+change was needed. `ETA_DEFAULT_SECONDS_PER_UNIT` set to 2e-07 from
+measurement (first estimate 15.1s rough vs 13.4s/12.0s actual).
+Benchmarks: full 29-table suite 12-14s; 55 000-row table 16.5s
+(`numpy` not needed).
  
 ---
  

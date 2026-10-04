@@ -73,6 +73,9 @@ def check_balance(text, label):
 
 
 def rows_of(t):
+    if t.get("literal") is not None:
+        cols = [c[0] for c in t["cols"]]
+        return [[r[k] for k in range(len(cols))] for r in t["literal"]]
     return [[e.py(n) for e in t["exprs"]] for n in range(1, t["n"] + 1)]
 
 
@@ -172,15 +175,25 @@ def main():
     check("t_1nf_nokey no unique triple", not bad, "unique=%s" % (bad[:3],))
     check("t_1nf_nokey has dup rows", len({tuple(x) for x in r}) < 120)
 
-    for name in ("d_coincidence", "d_many_columns"):
+    import sys as _sys
+    _sys.path.insert(0, str(R.OUT.parent.parent / "backend"))
+    from app.fd_discovery import count_candidates, discover
+    from app.fd_scoring import score_fd
+    from app.loader import code_columns
+
+    for name, lim in (("d_coincidence", 2), ("d_many_columns", 3)):
         t = T(name)
-        r = rows_of(t)
-        ncols = len(r[0])
-        # col 0 is the unique id: id->anything holds vacuously and is
-        # pruned as a key, not a signal (design 6.5). Check the rest.
-        bad = [(x, y) for x in range(1, ncols) for y in range(1, ncols)
-               if x != y and holds(r, [x], y)]
-        check("%s no exact FD" % name, not bad, "holds=%s" % (bad[:4],))
+        raw = {c: [r[k] for r in rows_of(t)] for k, c in enumerate(c[0] for c in t["cols"])}
+        cc = code_columns(raw)
+        cols = list(raw)
+        res = discover(cc.coded, cols, t["n"], None, lim)
+        m = count_candidates(len(cols), lim, None)
+        labels = {c: sorted(set(v for v in vals if v is not None))
+                  for c, vals in cc.coded.items()}
+        strong = [f for f in res.fds
+                  if score_fd(cc.coded, labels, f, m).tier == "strong"]
+        check("%s no strong FD (decoy)" % name, not strong,
+              "strong=%s" % ([(f.determinant, f.dependent) for f in strong][:4],))
 
     t = T("t_cross_copy")
     r = rows_of(t)

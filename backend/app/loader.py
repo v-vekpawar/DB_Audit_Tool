@@ -40,18 +40,28 @@ def split_columns(detail: dict) -> tuple:
     return searchable, excluded
 
 
-def code_columns(raw: dict) -> tuple:
+from dataclasses import dataclass, field
+
+
+@dataclass
+class CodedData:
+    coded: dict  # name -> [int | None]
+    null_ratio: dict  # name -> float
+    labels: dict  # name -> [original value per code]
+    counts: dict  # name -> [row count per code]
+
+
+def code_columns(raw: dict) -> CodedData:
     """Integer-code each column: equal values -> equal codes, NULL stays None.
 
-    Returns (coded {name: [int|None]}, null_ratio {name: float},
-    labels {name: [original value per code]}).
     NULL policy: rows with NULL in X are excluded from checks later;
     NULL in Y counts as a value (None groups with None).
     """
-    coded, ratios, labels = {}, {}, {}
+    coded, ratios, labels, counts = {}, {}, {}, {}
     for name, vals in raw.items():
         mapping: dict = {}
         inv: list = []
+        cnt: list = []
         col = []
         nulls = 0
         for v in vals:
@@ -66,11 +76,14 @@ def code_columns(raw: dict) -> tuple:
             if v not in mapping:
                 mapping[v] = len(inv)
                 inv.append(v)
+                cnt.append(0)
+            cnt[mapping[v]] += 1
             col.append(mapping[v])
         coded[name] = col
         ratios[name] = (nulls / len(vals)) if vals else 0.0
         labels[name] = inv
-    return coded, ratios, labels
+        counts[name] = cnt
+    return CodedData(coded, ratios, labels, counts)
 
 
 @dataclass
@@ -83,6 +96,7 @@ class LoadedTable:
     coded: dict  # name -> [int | None]
     null_ratio: dict
     labels: dict = field(default_factory=dict)  # name -> [value per code]
+    counts: dict = field(default_factory=dict)  # name -> [rows per code]
     excluded: list = field(default_factory=list)
     order_columns: list = field(default_factory=list)
 
@@ -162,7 +176,7 @@ def load_table(engine_or_conn, db_type: str, detail: dict,
                     break
             n = len(next(iter(raw_cols.values()), []))
             sampled = known_count is not None and known_count > max_rows
-            coded, ratios, labels = code_columns(raw_cols)
+            cc = code_columns(raw_cols)
         except Exception as e:
             log.error("load failed for %s: %s: %s", name, type(e).__name__, e,
                       extra={"scan_id": scan_id, "step": "load", "table": name})
@@ -170,8 +184,9 @@ def load_table(engine_or_conn, db_type: str, detail: dict,
     log.info("rows=%d sampled=%s excluded=%d", n, sampled, len(excluded),
              extra={"scan_id": scan_id, "step": "load", "table": name})
     return LoadedTable(name=name, row_count=n, bounded_count=known_count,
-                       sampled=sampled, columns=searchable, coded=coded,
-                       null_ratio=ratios, labels=labels,
+                       sampled=sampled, columns=searchable, coded=cc.coded,
+                       null_ratio=cc.null_ratio, labels=cc.labels,
+                       counts=cc.counts,
                        excluded=excluded, order_columns=order)
 
 
