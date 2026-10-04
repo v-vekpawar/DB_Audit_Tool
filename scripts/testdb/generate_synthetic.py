@@ -38,7 +38,11 @@ CARD = {"low": 8, "high": 60}
 
 def gen_dataset(rows, det_size, card_class, noise, n_cols, seed):
     rng = random.Random(seed)
-    det_cards = [rng.choice([6, 10, 12, 20]) for _ in range(det_size)]
+    # Determinant domain sized so groups average ~4+ rows: a plant with
+    # mostly singleton groups is unprovable from the data by design.
+    base = max(2.0, (rows / 4.0) ** (1.0 / det_size))
+    det_cards = [min(20, max(2, int(round(base * rng.uniform(0.7, 1.3)))))
+                 for _ in range(det_size)]
     dep_card = CARD[card_class]
     header = (
         [f"k{i}" for i in range(det_size)]

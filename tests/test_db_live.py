@@ -136,3 +136,44 @@ def test_metadata_table_list_matches_planted():
             assert len(struct["tables"]) == len(expected)
         finally:
             close(engine, conn)
+
+
+@needs_live
+def test_loader_counts_rows_and_sampling():
+    from app.loader import bounded_count, load_table
+    from app.metadata import table_detail
+
+    for params in (mysql_params(), pg_params()):
+        engine, conn, _ = connect(params, scan_id="live")
+        try:
+            det = table_detail(conn, params.db_type, "t_3nf_transitive",
+                               scan_id="live")
+            assert bounded_count(conn, params.db_type, "t_3nf_transitive",
+                                 scan_id="live") == 300
+            lt = load_table(conn, params.db_type, det, scan_id="live",
+                            known_count=300)
+            assert lt.row_count == 300 and not lt.sampled
+            assert lt.excluded == []
+            assert all(v == 0.0 for v in lt.null_ratio.values())
+
+            det = table_detail(conn, params.db_type, "d_wide_text",
+                               scan_id="live")
+            lt = load_table(conn, params.db_type, det, scan_id="live",
+                            known_count=80)
+            assert {e["name"] for e in lt.excluded} == {"body", "attachment", "meta"}
+
+            det = table_detail(conn, params.db_type, "t_big_sample",
+                               scan_id="live")
+            bc = bounded_count(conn, params.db_type, "t_big_sample",
+                               scan_id="live")
+            assert bc == 50001
+            lt = load_table(conn, params.db_type, det, scan_id="live",
+                            known_count=bc)
+            assert lt.sampled and lt.row_count == 50000
+
+            det = table_detail(conn, params.db_type, "d_nulls", scan_id="live")
+            lt = load_table(conn, params.db_type, det, scan_id="live",
+                            known_count=150)
+            assert lt.null_ratio["c1"] == 0.3
+        finally:
+            close(engine, conn)
