@@ -22,6 +22,12 @@ on MySQL 8.0.41, PostgreSQL 17.4 and Oracle Free 23c in Docker
 Python row semantics, quoted-lowercase identifiers). Recall 100%,
 precision 100%, 3-way parity: ALL OK. Older Oracle versions stay
 unverified until tried on a real target.
+Oracle follow-up (2026-10-05): quoted-lowercase tables need exact-case
+quoting on every row-reading query (`"TESTER"."cc_customers"` — bare
+names fold to uppercase and miss). Metadata reads `ALL_*` dictionary
+views directly; row reads quote identifiers on the Oracle path only
+(`backend/app/loader.py`). Re-verified: UI scan + fresh CLI scan,
+12/0/1/16/0/0 in 16.1s, 3-way parity ALL OK.
 
 Step 17 stress record (2026-10-04): Pagila v2.1.0 (PostgreSQL) and Sakila
 (MySQL) scanned as false-positive stress. Two distinct findings, both

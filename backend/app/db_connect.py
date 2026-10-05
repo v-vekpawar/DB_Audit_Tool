@@ -244,7 +244,8 @@ def map_exception(exc: BaseException, step: str = "connect",
                               "ora-12535", "ora-12154", "dpy-6001")):
         return make_error("DB_UNREACHABLE", step=step, scan_id=scan_id)
     if "unknown table" in msg or "no such table" in msg or "1146" in msg \
-            or "42p01" in msg or ('relation' in msg and "does not exist" in msg):
+            or "42p01" in msg or "table or view does not exist" in msg \
+            or ('relation' in msg and "does not exist" in msg):
         return make_error("TABLE_NOT_FOUND", step=step, scan_id=scan_id)
     if "permission denied" in msg or "command denied" in msg or "42501" in msg \
             or "not authorized" in msg or "insufficient privilege" in msg:

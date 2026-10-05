@@ -101,7 +101,22 @@ class LoadedTable:
     order_columns: list = field(default_factory=list)
 
 
-def _table_ref(detail_name: str, searchable: list, schema: str | None):
+def _is_oracle(db_type: str) -> bool:
+    return (db_type or "").lower() == "oracle"
+
+
+def _quote_ident(name) -> str:
+    return '"%s"' % str(name).replace('"', '""')
+
+
+def _oracle_from(table: str, schema: str | None) -> str:
+    if schema:
+        return "%s.%s" % (_quote_ident(schema), _quote_ident(table))
+    return _quote_ident(table)
+
+
+def _table_ref(detail_name: str, searchable: list, schema: str | None,
+               db_type: str = ""):
     from sqlalchemy import column as sa_column
     from sqlalchemy import table as sa_table
     return sa_table(detail_name, *[sa_column(c) for c in searchable],
@@ -112,6 +127,11 @@ def bounded_count_query(table: str, db_type: str, schema: str | None,
                         max_rows: int):
     from sqlalchemy import func, literal, select
     from sqlalchemy import table as sa_table
+    from sqlalchemy import text as sa_text
+    if _is_oracle(db_type):
+        return sa_text(
+            "SELECT COUNT(*) FROM (SELECT 1 FROM %s FETCH FIRST %d ROWS ONLY)"
+            % (_oracle_from(table, schema), max_rows + 1))
     kw_schema = None if (db_type or "").lower() == "mysql" else schema
     t = sa_table(table, schema=kw_schema)
     inner = select(literal(1)).select_from(t).limit(max_rows + 1).subquery()
@@ -159,13 +179,24 @@ def load_table(engine_or_conn, db_type: str, detail: dict,
     with StepTimer("load", scan_id, name):
         try:
             kw_schema = None if (db_type or "").lower() == "mysql" else schema
-            t = _table_ref(name, searchable, kw_schema)
-            q = select(*[t.c[c] for c in searchable])
-            for c in order:
-                q = q.order_by(t.c[c])
-            if known_count is not None and known_count > max_rows:
-                q = q.limit(max_rows)
-            sql = str(q.compile(compile_kwargs={"literal_binds": True}))
+            if _is_oracle(db_type):
+                from sqlalchemy import text as sa_text
+                cols = ", ".join(_quote_ident(c) for c in searchable)
+                order_by = (" ORDER BY " + ", ".join(_quote_ident(c) for c in order)
+                            if order else "")
+                fetch = (" FETCH FIRST %d ROWS ONLY" % max_rows
+                         if known_count is not None and known_count > max_rows else "")
+                q = sa_text("SELECT %s FROM %s%s%s"
+                            % (cols, _oracle_from(name, kw_schema), order_by, fetch))
+                sql = str(q)
+            else:
+                t = _table_ref(name, searchable, kw_schema, db_type)
+                q = select(*[t.c[c] for c in searchable])
+                for c in order:
+                    q = q.order_by(t.c[c])
+                if known_count is not None and known_count > max_rows:
+                    q = q.limit(max_rows)
+                sql = str(q.compile(compile_kwargs={"literal_binds": True}))
             assert_select(sql)
             result = engine_or_conn.execute(q)
             raw_cols = {c: [] for c in searchable}
@@ -196,11 +227,19 @@ def load_columns(engine_or_conn, db_type: str, table: str, columns: list,
     """Load raw values for a few columns (cross-table evidence)."""
     from sqlalchemy import select
     kw_schema = None if (db_type or "").lower() == "mysql" else schema
-    t = _table_ref(table, columns, kw_schema)
-    q = select(*[t.c[c] for c in columns])
-    if limit is not None:
-        q = q.limit(limit)
-    assert_select(str(q.compile(compile_kwargs={"literal_binds": True})))
+    if _is_oracle(db_type):
+        from sqlalchemy import text as sa_text
+        cols = ", ".join(_quote_ident(c) for c in columns)
+        fetch = (" FETCH FIRST %d ROWS ONLY" % limit if limit is not None else "")
+        q = sa_text("SELECT %s FROM %s%s" % (cols, _oracle_from(table, kw_schema), fetch))
+        sql = str(q)
+    else:
+        t = _table_ref(table, columns, kw_schema, db_type)
+        q = select(*[t.c[c] for c in columns])
+        if limit is not None:
+            q = q.limit(limit)
+        sql = str(q.compile(compile_kwargs={"literal_binds": True}))
+    assert_select(sql)
     try:
         return [tuple(row) for row in engine_or_conn.execute(q)]
     except Exception as e:

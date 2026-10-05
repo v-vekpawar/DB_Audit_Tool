@@ -9,7 +9,7 @@ import argparse
 import getpass
 import json
 
-from .db_connect import ConnectError, ConnectParams, close, connect, map_exception
+from .db_connect import ConnectError, ConnectParams, assert_select, close, connect, map_exception
 from .logging_setup import StepTimer, get_logger, setup_logging
 
 EXCLUDED_SCHEMAS = frozenset({
@@ -134,6 +134,10 @@ def list_tables(engine_or_conn, db_type: str, schema: str | None = None,
 def table_detail(engine_or_conn, db_type: str, table: str,
                  schema: str | None = None, scan_id: str = "-") -> dict:
     """Full structure of one table: columns, keys, uniques, FKs, indexes."""
+    if (db_type or "").lower() == "oracle":
+        return _oracle_table_detail(engine_or_conn, table,
+                                    effective_schema(db_type, schema),
+                                    scan_id)
     from sqlalchemy import inspect as sa_inspect
     kw = _schema_arg(db_type, schema)
     try:
@@ -175,6 +179,133 @@ def table_detail(engine_or_conn, db_type: str, table: str,
                      "columns": list(i.get("column_names") or []),
                      "unique": bool(i.get("unique"))} for i in indexes],
     }
+
+
+def _oracle_table_detail(engine_or_conn, table: str, owner: str | None,
+                         scan_id: str = "-") -> dict:
+    """Dictionary-view metadata with exact-case binds.
+
+    sqlalchemy.inspect() folds unquoted Oracle identifiers to uppercase,
+    which misses quoted-lowercase tables (and would mis-resolve any
+    mixed-case name). Direct ALL_* queries use the names verbatim.
+    Requires catalog access (see docs/OPERATOR_GUIDE.md).
+    """
+    from sqlalchemy import text as sa_text
+
+    def run(sql, params):
+        assert_select(sql)
+        return engine_or_conn.execute(sa_text(sql), params).fetchall()
+
+    try:
+        cols = run(
+            "SELECT column_name, data_type, data_length, data_precision, "
+            "data_scale, nullable FROM all_tab_columns "
+            "WHERE owner = :o AND table_name = :t ORDER BY column_id",
+            {"o": owner, "t": table})
+        if not cols:
+            from sqlalchemy.exc import NoSuchTableError
+            raise NoSuchTableError("%s.%s" % (owner, table))
+        pk = [r[0] for r in run(
+            "SELECT cc.column_name FROM all_constraints c "
+            "JOIN all_cons_columns cc ON cc.owner = c.owner "
+            "AND cc.constraint_name = c.constraint_name "
+            "WHERE c.owner = :o AND c.table_name = :t "
+            "AND c.constraint_type = 'P' ORDER BY cc.position",
+            {"o": owner, "t": table})]
+        uniq_rows = run(
+            "SELECT c.constraint_name, cc.column_name FROM all_constraints c "
+            "JOIN all_cons_columns cc ON cc.owner = c.owner "
+            "AND cc.constraint_name = c.constraint_name "
+            "WHERE c.owner = :o AND c.table_name = :t "
+            "AND c.constraint_type = 'U' ORDER BY c.constraint_name, cc.position",
+            {"o": owner, "t": table})
+        uniques, cur_name, cur_cols = [], None, []
+        for cname, col in uniq_rows + [(None, None)]:
+            if cname != cur_name:
+                if cur_cols:
+                    uniques.append(cur_cols)
+                cur_name, cur_cols = cname, []
+            if col is not None:
+                cur_cols.append(col)
+        fk_rows = run(
+            "SELECT c.constraint_name, cc.column_name, rc.table_name, "
+            "rcc.column_name FROM all_constraints c "
+            "JOIN all_cons_columns cc ON cc.owner = c.owner "
+            "AND cc.constraint_name = c.constraint_name "
+            "JOIN all_constraints rc ON rc.owner = c.r_owner "
+            "AND rc.constraint_name = c.r_constraint_name "
+            "JOIN all_cons_columns rcc ON rcc.owner = rc.owner "
+            "AND rcc.constraint_name = rc.constraint_name "
+            "AND rcc.position = cc.position "
+            "WHERE c.owner = :o AND c.table_name = :t "
+            "AND c.constraint_type = 'R' "
+            "ORDER BY c.constraint_name, cc.position",
+            {"o": owner, "t": table})
+        fks, cur_name, cur_fk = [], None, None
+        for cname, col, rtab, rcol in fk_rows + [(None, None, None, None)]:
+            if cname != cur_name:
+                if cur_fk is not None:
+                    fks.append(cur_fk)
+                cur_fk = None if cname is None else {
+                    "columns": [], "referred_table": rtab,
+                    "referred_columns": []}
+                cur_name = cname
+            if cur_fk is not None:
+                cur_fk["columns"].append(col)
+                cur_fk["referred_columns"].append(rcol)
+        idx_rows = run(
+            "SELECT i.index_name, ic.column_name, i.uniqueness "
+            "FROM all_indexes i JOIN all_ind_columns ic "
+            "ON ic.index_owner = i.owner AND ic.index_name = i.index_name "
+            "WHERE i.table_owner = :o AND i.table_name = :t "
+            "ORDER BY i.index_name, ic.column_position",
+            {"o": owner, "t": table})
+        indexes, cur_name, cur_idx = [], None, None
+        for iname, col, uniq in idx_rows + [(None, None, None)]:
+            if iname != cur_name:
+                if cur_idx is not None:
+                    indexes.append(cur_idx)
+                cur_idx = None if iname is None else {
+                    "name": iname, "columns": [],
+                    "unique": (uniq == "UNIQUE")}
+                cur_name = iname
+            if cur_idx is not None:
+                cur_idx["columns"].append(col)
+    except Exception as e:
+        get_logger().error("metadata failed for %s: %s: %s", table,
+                           type(e).__name__, e,
+                           extra={"scan_id": scan_id, "step": "metadata", "table": table})
+        from sqlalchemy.exc import NoSuchTableError as _NoSuch
+        if isinstance(e, _NoSuch):
+            from .errors import make_error as _make_error
+            raise ConnectError(_make_error("TABLE_NOT_FOUND", step="metadata",
+                                           scan_id=scan_id)) from e
+        raise ConnectError(map_exception(e, step="metadata", scan_id=scan_id)) from e
+    pk_set = set(pk)
+    fk_by_col = {}
+    for fk in fks:
+        for c, r in zip(fk["columns"], fk["referred_columns"]):
+            fk_by_col[c] = {"table": fk["referred_table"], "column": r}
+    return {
+        "name": table,
+        "columns": [{"name": r[0], "type": _oracle_type(r[1], r[2], r[3], r[4]),
+                     "nullable": (r[5] != "N"),
+                     "pk": r[0] in pk_set,
+                     "fk": fk_by_col.get(r[0])} for r in cols],
+        "pk": list(pk),
+        "uniques": [sorted(u) for u in uniques],
+        "fks": fks,
+        "indexes": indexes,
+    }
+
+
+def _oracle_type(data_type, length, precision, scale):
+    t = (data_type or "").upper()
+    if t == "NUMBER" and precision:
+        return "NUMBER(%s%s)" % (precision, ",%s" % scale if scale else "")
+    if t in ("VARCHAR2", "NVARCHAR2", "CHAR", "NCHAR"):
+        return "%s(%s)" % (t, length)
+    return t
 
 
 def database_structure(engine_or_conn, db_type: str, briefs: list,

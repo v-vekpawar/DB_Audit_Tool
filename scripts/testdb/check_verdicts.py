@@ -16,7 +16,14 @@ HERE = Path(__file__).resolve().parent
 
 
 def load_result(path):
-    return json.load(open(path, encoding="utf-8"))
+    # Tolerant of PowerShell `>` redirection, which writes UTF-16.
+    with open(path, encoding="utf-8") as f:
+        try:
+            return json.load(f)
+        except UnicodeDecodeError:
+            pass
+    with open(path, encoding="utf-16") as f:
+        return json.load(f)
 
 
 def verdicts_of(result):

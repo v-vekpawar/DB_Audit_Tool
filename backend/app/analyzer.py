@@ -535,6 +535,8 @@ def main(argv=None) -> int:
     ap.add_argument("--tables", default="",
                     help="comma-separated table names, or empty with --all")
     ap.add_argument("--all", action="store_true")
+    ap.add_argument("--out", default=None,
+                    help="write result JSON to this file (utf-8) instead of stdout")
     a = ap.parse_args(argv)
     pw = a.password if a.password is not None else getpass.getpass("Password: ")
     setup_logging()
@@ -557,7 +559,13 @@ def main(argv=None) -> int:
     else:
         selected = [t.strip() for t in a.tables.split(",") if t.strip()]
     result = analyze_db(params, selected, schema=params.schema, scan_id="cli")
-    print(json.dumps(result, indent=2, default=str))
+    text = json.dumps(result, indent=2, default=str)
+    if a.out:
+        with open(a.out, "w", encoding="utf-8") as f:
+            f.write(text)
+        print("wrote %s (%s)" % (a.out, result["scan"].get("status")))
+    else:
+        print(text)
     return 0 if result["scan"].get("status") in ("completed", "stopped") else 2
 
 
