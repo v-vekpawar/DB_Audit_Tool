@@ -37,6 +37,10 @@ multi-valued column, reported by design) on both engines, and Sakila
 `rental` `(customer_id, rental_date) -> return_date` (partial, via the
 declared unique key on `(rental_date, inventory_id, customer_id)`).
 No threshold or algorithm change resulted.
+
+Version support (2026-10-05): identical planted verdicts (ALL OK) on
+MySQL 8.4.11 and PostgreSQL 18.6 after local upgrades — no tool, driver
+or query changes needed. 8.0.41/17.4 verdicts unchanged.
  
 ---
  

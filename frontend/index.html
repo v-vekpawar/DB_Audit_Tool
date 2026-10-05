@@ -72,14 +72,16 @@
     </div>
 
     <div class="field" id="field-schema" hidden>
-      <label for="schema">Schema</label>
+      <label for="schema">Schema <span class="field-hint">(optional, defaults to public)</span></label>
       <input type="text" id="schema" class="mono" placeholder="public" autocomplete="off">
-      <p class="field-hint">PostgreSQL only, optional. Oracle schemas are picked after connecting.</p>
-      <p class="field-hint settings-field-error" id="err-schema" hidden></p>
     </div>
 
     <div class="field">
       <label class="checkbox-option"><input type="checkbox" id="ssl"><span>Use SSL (certificate verification is skipped)</span></label>
+    </div>
+
+    <div id="conn-summary" class="conn-summary" hidden>
+      <span id="conn-summary-text" class="mono"></span>
     </div>
 
     <div id="form-error" class="form-error" hidden role="alert"></div>
@@ -102,6 +104,7 @@
     <div class="picker-toolbar">
       <button type="button" id="select-all-btn" class="btn btn-secondary">Select all</button>
       <button type="button" id="select-none-btn" class="btn btn-secondary">Select none</button>
+      <button type="button" id="toggle-tables-btn" class="btn btn-secondary">Hide tables</button>
       <input type="text" id="table-filter" placeholder="Filter tables" autocomplete="off" aria-label="Filter tables">
       <span id="picker-counter" class="field-hint"></span>
     </div>
@@ -115,7 +118,6 @@
     <div class="stop-row">
       <button type="button" id="stop-scan-btn" class="btn btn-secondary">Stop scan</button>
     </div>
-    <ul id="status-list" class="status-list"></ul>
   </section>
 
   <div id="stream-banner" class="banner-error" hidden role="alert"></div>
@@ -131,7 +133,9 @@
     <span id="export-status" class="field-hint"></span>
   </div>
   <div id="notices" class="notices" hidden></div>
-  <div id="cards"></div>
+  <h3 class="section-label">Tables</h3>
+  <ul id="status-list" class="status-list"></ul>
+  <p id="cards-hint" class="field-hint" hidden>Select a faulted table above to view its card.</p>
 </section>
 
 <script src="app.js"></script>

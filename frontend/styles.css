@@ -185,6 +185,14 @@ input:disabled {
   flex-wrap: wrap;
 }
 
+.conn-summary {
+  background: var(--accent-soft);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 0.9rem;
+}
+
 .form-error {
   background: var(--danger-soft);
   color: var(--danger);
@@ -362,6 +370,21 @@ input:focus-visible {
 
 .status-row.done {
   cursor: pointer;
+}
+
+.status-row.selected {
+  background: var(--accent-soft);
+}
+
+.status-list li.card-row {
+  display: block;
+  padding: 12px;
+  background: var(--surface);
+  cursor: default;
+}
+
+.status-list li.card-row .card-svg {
+  margin-bottom: 0;
 }
 
 .status-name {

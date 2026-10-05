@@ -355,7 +355,7 @@ function statusBadge(state, normalForm) {
     case "suspected": return ["Suspected", "badge-suspected"];
     case "insufficient_data": return ["Insufficient data", "badge-insufficient"];
     case "error": return ["Error", "badge-error"];
-    case "not_run": return ["Not run", "badge-notrun"];
+    case "not_run": return ["Scan stopped", "badge-notrun"];
     default: return [state, "badge-queued"];
   }
 }
@@ -426,6 +426,8 @@ function initApp() {
     fieldService: document.getElementById("field-service"),
     fieldSchema: document.getElementById("field-schema"),
     formError: document.getElementById("form-error"),
+    connSummary: document.getElementById("conn-summary"),
+    connSummaryText: document.getElementById("conn-summary-text"),
     dbSection: document.getElementById("db-section"),
     dbList: document.getElementById("db-list"),
     listTablesBtn: document.getElementById("list-tables-btn"),
@@ -435,6 +437,7 @@ function initApp() {
     pickerCounter: document.getElementById("picker-counter"),
     selectAllBtn: document.getElementById("select-all-btn"),
     selectNoneBtn: document.getElementById("select-none-btn"),
+    toggleTablesBtn: document.getElementById("toggle-tables-btn"),
     scanBtn: document.getElementById("scan-btn"),
     progressSection: document.getElementById("progress-section"),
     progressLine: document.getElementById("progress-line"),
@@ -448,7 +451,7 @@ function initApp() {
     exportPdfBtn: document.getElementById("export-pdf-btn"),
     exportStatus: document.getElementById("export-status"),
     notices: document.getElementById("notices"),
-    cards: document.getElementById("cards"),
+    cardsHint: document.getElementById("cards-hint"),
   };
 
   const state = {
@@ -464,11 +467,15 @@ function initApp() {
     lastSeq: 0,
     statuses: new Map(), // name -> {state, step, normalForm, error, secs}
     cards: new Map(), // name -> full table result
+    openCard: null, // name with its card expanded below its row
+    autoFollow: true, // follow the latest finished card during live scans
+    lastExpanded: false, // last-scan details unfolded
     notices: [],
     counts: null,
     scanStatus: null, // running | completed | stopped | failed
     estimate: null,
     t0: 0,
+    endElapsed: null,
     elapsedTimer: null,
     stopped: false,
   };
@@ -545,9 +552,6 @@ function initApp() {
     els.fieldService.hidden = t !== "oracle";
     els.fieldSchema.hidden = t !== "postgresql";
     els.port.placeholder = logic.DEFAULT_PORTS[t] || "";
-    if (t === "postgresql") {
-      els.schema.placeholder = "public";
-    }
   }
 
   els.form.querySelectorAll('input[name="db_type"]').forEach((radio) => {
@@ -556,17 +560,65 @@ function initApp() {
   updateEngineFields();
 
   function lockForm(locked) {
-    els.form.querySelectorAll("input, button").forEach((el) => {
+    els.form.querySelectorAll("input, button, fieldset").forEach((el) => {
       if (el.id !== "change-conn-btn") el.disabled = locked;
     });
+    els.form.querySelectorAll("fieldset.field, .field, #connect-btn").forEach((el) => {
+      el.hidden = locked;
+    });
     els.changeConnBtn.hidden = !locked;
+    els.connSummary.hidden = !locked;
+    if (locked) updateConnSummary();
+  }
+
+  function updateConnSummary() {
+    const c = state.connection;
+    if (!c) return;
+    const db = c.dbType === "oracle" ? (state.selectedDb || c.serviceName)
+      : (state.selectedDb || c.database || "");
+    els.connSummaryText.textContent =
+      `Connected to ${db} (${c.dbType}) as ${c.username || "—"} @ ${c.host}`;
   }
 
   els.changeConnBtn.addEventListener("click", () => {
+    resetScanState();
     lockForm(false);
+    updateEngineFields();
     els.dbSection.hidden = true;
     els.pickerSection.hidden = true;
   });
+
+  // Clears every trace of the previous run: progress, results, cards,
+  // timeline, banners and selection. Form field values stay as typed.
+  function resetScanState() {
+    closeStream();
+    stopElapsedTimer();
+    state.scanId = null;
+    state.lastSeq = 0;
+    state.statuses = new Map();
+    state.cards = new Map();
+    state.openCard = null;
+    state.autoFollow = true;
+    state.notices = [];
+    state.counts = null;
+    state.scanStatus = null;
+    state.estimate = null;
+    state.stopped = false;
+    state.t0 = 0;
+    els.progressSection.hidden = true;
+    els.resultsSection.hidden = true;
+    els.progressLine.textContent = "";
+    els.statusList.innerHTML = "";
+    els.notices.innerHTML = "";
+    els.notices.hidden = true;
+    els.stopScanBtn.hidden = false;
+    els.stopScanBtn.disabled = false;
+    els.stopScanBtn.textContent = "Stop scan";
+    hideStreamBanner();
+    clearError();
+    state.lastExpanded = false;
+    els.viewLastBtn.textContent = "View Last Results";
+  }
 
   function readForm() {
     return {
@@ -582,8 +634,7 @@ function initApp() {
   }
 
   function clearFieldErrors() {
-    ["err-host", "err-port", "err-service-name",
-      "err-schema"].forEach((id) => {
+    ["err-host", "err-port", "err-service-name"].forEach((id) => {
       const el = document.getElementById(id);
       if (el) el.hidden = true;
     });
@@ -665,13 +716,17 @@ function initApp() {
         body: JSON.stringify(logic.buildConnectPayload(state.connection, {
           database: isOracle ? "" : state.selectedDb,
           schema: isOracle ? state.selectedDb
-            : (state.connection.schema || null) })),
+            : (state.connection.schema || null),
+        })),
       });
       state.schema = data.schema || null;
       state.totalInDb = data.tables.length;
       state.briefs = data.tables;
       state.selected = new Set(data.tables.map((t) => t.name));
+      updateConnSummary();
       renderPicker();
+      els.tableList.hidden = false;
+      els.toggleTablesBtn.textContent = "Hide tables";
       els.pickerSection.hidden = false;
       els.pickerSection.scrollIntoView();
     } catch (e) { /* shown by apiFetch */ } finally {
@@ -711,7 +766,8 @@ function initApp() {
   function updatePickerCounter() {
     els.pickerCounter.textContent =
       `${state.selected.size} of ${state.briefs.length} selected`;
-    els.scanBtn.disabled = state.selected.size === 0;
+    els.scanBtn.disabled = state.scanStatus === "running"
+      || state.selected.size === 0;
   }
 
   els.selectAllBtn.addEventListener("click", () => {
@@ -722,6 +778,10 @@ function initApp() {
     state.selected.clear();
     renderPicker();
   });
+  els.toggleTablesBtn.addEventListener("click", () => {
+    els.tableList.hidden = !els.tableList.hidden;
+    els.toggleTablesBtn.textContent = els.tableList.hidden ? "Show tables" : "Hide tables";
+  });
   els.tableFilter.addEventListener("input", renderPicker);
 
   // ---------- scan lifecycle
@@ -730,6 +790,14 @@ function initApp() {
     clearError();
     hideStreamBanner();
     if (state.selected.size === 0) return;
+    if (!state.connection) {
+      showError({ code: "VALIDATION_ERROR",
+        message: "Connect to a database first.",
+        hint: "Fill the connection form and click Connect.",
+        step: "scan", scan_id: "-" });
+      return;
+    }
+    if (state.scanStatus === "running") return;
     els.scanBtn.disabled = true;
     const isOracle = state.connection.dbType === "oracle";
     try {
@@ -744,7 +812,8 @@ function initApp() {
       });
       enterScan(data.scan_id, [...state.selected], true);
     } catch (e) { /* shown */ } finally {
-      els.scanBtn.disabled = state.selected.size === 0;
+      els.scanBtn.disabled = state.scanStatus === "running"
+        || state.selected.size === 0;
     }
   });
 
@@ -767,6 +836,8 @@ function initApp() {
     state.lastSeq = 0;
     state.statuses = new Map(selected.map((n) => [n, { state: "queued" }]));
     state.cards = new Map();
+    state.openCard = null;
+    state.autoFollow = true;
     state.notices = [];
     state.counts = null;
     state.scanStatus = "running";
@@ -848,7 +919,10 @@ function initApp() {
           secs: data.duration_seconds };
         if (data.status === "error" && data.error) st.error = data.error;
         state.statuses.set(data.table, st);
-        if (data.result) state.cards.set(data.table, data.result);
+        if (data.result) {
+          state.cards.set(data.table, data.result);
+          if (state.autoFollow) state.openCard = data.table;
+        }
         break;
       }
       case "table_error":
@@ -858,6 +932,15 @@ function initApp() {
         state.scanStatus = data.status;
         state.counts = data.counts || state.counts;
         state.stopped = data.status === "stopped";
+        state.endElapsed = (Date.now() - state.t0) / 1000;
+        els.scanBtn.disabled = state.selected.size === 0;
+        if (data.status === "stopped") {
+          for (const [name, st] of state.statuses) {
+            if (st.state === "queued" || st.state === "checking") {
+              state.statuses.set(name, { state: "not_run" });
+            }
+          }
+        }
         closeStream();
         stopElapsedTimer();
         hideStreamBanner();
@@ -887,18 +970,34 @@ function initApp() {
     renderResults();
   }
 
+  function timelineText() {
+    const terminal = state.scanStatus === "completed" ||
+      state.scanStatus === "stopped" || state.scanStatus === "failed";
+    if (terminal) {
+      const secs = state.endElapsed ?? (Date.now() - state.t0) / 1000;
+      const scope = `Checked ${finishedCount()} of ${state.statuses.size} tables.`;
+      if (state.scanStatus === "stopped") {
+        return `${scope} Scan stopped — partial results kept`;
+      }
+      if (state.scanStatus === "failed") {
+        return `${scope} Scan failed after ${logic.formatClock(secs)}`;
+      }
+      return `${scope} Scan completed in ${logic.formatClock(secs)}`;
+    }
+    const secs = (Date.now() - state.t0) / 1000;
+    const done = finishedCount();
+    const est = state.estimate || {};
+    return logic.formatTimeline({
+      done, selected: state.statuses.size, elapsedSeconds: secs,
+      remainingSeconds: est.remaining_seconds ?? null,
+      totalSeconds: est.total_seconds ?? null,
+      basis: est.basis || null, stopped: state.stopped });
+  }
+
   function startElapsedTimer() {
     stopElapsedTimer();
     state.elapsedTimer = setInterval(() => {
-      const secs = (Date.now() - state.t0) / 1000;
-      const done = [...state.statuses.values()]
-        .filter((s) => s.state !== "queued" && s.state !== "checking").length;
-      const est = state.estimate || {};
-      els.progressLine.textContent = logic.formatTimeline({
-        done, selected: state.statuses.size, elapsedSeconds: secs,
-        remainingSeconds: est.remaining_seconds ?? null,
-        totalSeconds: est.total_seconds ?? null,
-        basis: est.basis || null, stopped: state.stopped });
+      els.progressLine.textContent = timelineText();
     }, 1000);
   }
 
@@ -910,16 +1009,7 @@ function initApp() {
   }
 
   function renderTimeline() {
-    // Filled by the 1s ticker; show a first paint immediately.
-    const secs = (Date.now() - state.t0) / 1000;
-    const done = [...state.statuses.values()]
-      .filter((s) => s.state !== "queued" && s.state !== "checking").length;
-    const est = state.estimate || {};
-    els.progressLine.textContent = logic.formatTimeline({
-      done, selected: state.statuses.size, elapsedSeconds: secs,
-      remainingSeconds: est.remaining_seconds ?? null,
-      totalSeconds: est.total_seconds ?? null,
-      basis: est.basis || null, stopped: state.stopped });
+    els.progressLine.textContent = timelineText();
     els.stopScanBtn.hidden = state.scanStatus !== "running";
   }
 
@@ -950,19 +1040,34 @@ function initApp() {
       if ((st.state === "faulted" || st.state === "suspected") &&
           state.cards.has(name)) {
         li.classList.add("done");
+        if (state.openCard === name) li.classList.add("selected");
         li.addEventListener("click", () => {
-          const card = document.getElementById(`card-${name}`);
-          if (card) card.scrollIntoView({ block: "start" });
+          state.openCard = state.openCard === name ? null : name;
+          state.autoFollow = false;
+          renderAll();
+          if (state.openCard === name) {
+            const card = document.getElementById(`card-${name}`);
+            if (card) card.scrollIntoView({ block: "nearest" });
+          }
         });
       }
       els.statusList.appendChild(li);
+      if (state.openCard === name && state.cards.has(name)) {
+        const row = document.createElement("li");
+        row.className = "card-row";
+        row.appendChild(renderSimpleCard(name, state.cards.get(name)));
+        els.statusList.appendChild(row);
+      }
     }
   }
 
   function finishedCount() {
+    // Tables actually scanned (verdict or error). not_run never started,
+    // so it must not inflate the "a of b tables scanned" head.
     let n = 0;
     for (const st of state.statuses.values()) {
-      if (st.state !== "queued" && st.state !== "checking") n += 1;
+      if (st.state !== "queued" && st.state !== "checking"
+          && st.state !== "not_run") n += 1;
     }
     return n;
   }
@@ -1001,11 +1106,11 @@ function initApp() {
       }
       els.notices.appendChild(ul);
     }
-    // Cards, in the order tables finished.
-    els.cards.innerHTML = "";
-    for (const [name, full] of state.cards) {
-      els.cards.appendChild(renderSimpleCard(name, full));
-    }
+    // Accordion: at most one card open, directly below its status row
+    // (rendered inside renderStatusList). Clicking its row again hides it.
+    const anyCards = state.cards.size > 0;
+    const openShown = state.openCard && state.cards.has(state.openCard);
+    els.cardsHint.hidden = !(anyCards && !openShown);
   }
 
   // Full SVG graph card (Step 11). Same container and `card-<name>` ids
@@ -1033,6 +1138,8 @@ function initApp() {
         secs: s.duration_seconds || 0 });
     }
     state.cards = new Map();
+    state.selectedCard = null;
+    state.autoFollow = false;
     for (const t of payload.tables || []) {
       state.cards.set(t.name, t);
       state.statuses.set(t.name, { state: t.status,
@@ -1050,11 +1157,15 @@ function initApp() {
     if (scan.status && scan.status !== "running") {
       closeStream();
       stopElapsedTimer();
+      state.endElapsed = scan.duration_seconds != null
+        ? scan.duration_seconds
+        : (Date.now() - state.t0) / 1000;
     }
     renderAll();
   }
 
-  // ---------- last scan panel
+  // ---------- last scan panel (always visible when data exists).
+  // The View button only toggles the *result* below, never this panel.
 
   async function refreshLastScan() {
     let data = null;
@@ -1081,15 +1192,30 @@ function initApp() {
     els.lastScanHeadline.textContent = logic.formatHeadline(c,
       sel - (c.not_run || 0), sel, c.not_selected || 0);
     els.lastScanSection.hidden = false;
+    if (!state.lastExpanded) {
+      els.viewLastBtn.textContent = "View Last Results";
+    }
+  }
+
+  function setLastButton() {
+    els.viewLastBtn.textContent = state.lastExpanded ? "Hide result" : "View Last Results";
   }
 
   els.viewLastBtn.addEventListener("click", async () => {
+    if (state.lastExpanded) {
+      state.lastExpanded = false;
+      setLastButton();
+      els.resultsSection.hidden = true;
+      return;
+    }
     clearError();
     try {
       const data = await apiFetch("/api/scan/last");
       state.totalInDb = (data.scan.counts.total_in_db || 0);
       ingestResults(data, false);
       state.scanId = data.scan.id || null;
+      state.lastExpanded = true;
+      setLastButton();
       els.resultsSection.hidden = false;
       els.resultsSection.scrollIntoView();
     } catch (e) { /* shown */ }
