@@ -192,7 +192,7 @@ def _evidence(det, dep, coded, labels, fd, m, distinct_det, repeated_rows,
     return ev
 
 
-def _examples(coded, labels, det, dep, fd, limit=3):
+def _examples(coded, labels, det, dep, fd, limit=5):
     groups, _ = group_rows(coded, det)
     multi = sorted(groups.items(), key=lambda kv: -len(kv[1]))
     out = []

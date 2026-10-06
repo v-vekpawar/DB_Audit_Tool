@@ -12,7 +12,8 @@ FIXTURE = json.load(open(Path(__file__).resolve().parent.parent
 
 
 def wrap():
-    return {"scan": {"id": "pdf1", "db_type": "mysql", "database": "shop",
+    return {"scan": {"id": "pdf1", "db_type": "mysql", "host": "10.0.0.5",
+                     "database": "shop", "database_count": 4,
                      "started_at": "2026-10-04T12:00:00+00:00",
                      "duration_seconds": 42.0, "status": "completed",
                      "selected_tables": [t["name"] for t in FIXTURE["tables"]],
@@ -27,12 +28,47 @@ def test_pdf_covers_every_kind():
     pdf = build_pdf(wrap(), compress=False)
     assert pdf.startswith(b"%PDF")
     text = pdf.decode("latin-1")
-    for needle in ("t_3nf_transitive", "t_2nf_partial", "t_1nf_delimited",
-                   "t_1nf_repeating", "t_suspected", "Confidence Score: 96",
-                   "Why this fails 3NF", "Recommendation:",
-                   "possibly 2NF", "comma-separated lists",
-                   "repeating group", "holds with exceptions",
-                   "\\(exception\\)", "98.4% match", "sampled"):
+    for needle in ("DATABASE NORMALIZATION TEST REPORT",
+                   "What was tested", "MySQL", "10.0.0.5",
+                   "Databases found", "Database tested",
+                   "Tables checked", "Summary", "below 3NF",
+                   "Faulted tables:", "t_3nf_transitive", "t_2nf_partial",
+                   "t_1nf_delimited",
+                   "t_1nf_repeating", "t_suspected", "High", "96",
+                   "Distinct values", "Repeated rows", "Candidates tested",
+                   "chance of coincidence", "Also seen in", "Similar names",
+                   "Transitive dependency \\(violates 3NF\\)",
+                   "Partial dependency \\(violates 2NF\\)",
+                   "Recommendation.", "possibly 2NF",
+                   "comma-separated lists", "repeating group",
+                   "2 exception rows", "\\(exception\\)", "98.4% match",
+                   "sampled", "Illustrative sketch",
+                   "Key confidence:", "Double-headed arrow",
+                   "Table:", "Rows from", "Acme",
+                   "red, green, blue"):
+        assert needle in text, needle
+
+
+def test_pdf_lists_insufficient_data_tables():
+    thin = {"name": "tiny", "row_count": 5, "sampled": False,
+            "status": "insufficient_data", "normal_form": None,
+            "columns": [{"name": "a"}, {"name": "b"}],
+            "keys": [], "key_confidence": None,
+            "violations": [], "fds": [], "recommendation": ""}
+    res = wrap()
+    res["scan"]["selected_tables"] = ["tiny"]
+    res["scan"]["counts"] = {"total_in_db": 1, "selected": 1,
+                             "not_selected": 0, "faulted": 0,
+                             "suspected": 0, "insufficient_data": 1,
+                             "clean": 0, "error": 0, "not_run": 0}
+    res["tables"] = [thin]
+    pdf = build_pdf(res, compress=False)
+    assert pdf.startswith(b"%PDF")
+    text = pdf.decode("latin-1")
+    for needle in ("tiny", "too few rows to judge",
+                   "1 of 1 tables", "0 of 1 tables",
+                   "Tables not tested:",
+                   "tiny \\(too few rows to judge\\)"):
         assert needle in text, needle
 
 

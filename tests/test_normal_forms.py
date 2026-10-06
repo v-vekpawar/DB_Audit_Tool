@@ -93,6 +93,8 @@ def test_1nf_delimited_and_repeating():
     out, _ = classify_of({"id": list(range(150)), "tags": tags}, pk=["id"], n=150)
     assert out["status"] == "faulted"
     assert any(v["kind"] == "delimited" for v in out["violations"])
+    delim = next(v for v in out["violations"] if v["kind"] == "delimited")
+    assert delim["sample"] == "a,b"
     out, _ = classify_of({"id": list(range(150)),
                           "phone1": ["x"] * 150, "phone2": ["y"] * 150,
                           "phone3": ["z"] * 150}, pk=["id"], n=150)

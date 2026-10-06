@@ -52,6 +52,17 @@ def delimited_columns(col_stats, n_rows=None):
     return out
 
 
+def _delim_sample(stat):
+    """Most frequent multi-valued cell (read-only, from loaded rows)."""
+    best, best_c = None, -1
+    for lab, c in zip(stat.get("labels") or [], stat.get("counts") or []):
+        if _has_list_value(str(lab)) is not None and c > best_c:
+            best, best_c = str(lab), c
+    if best is None:
+        return None
+    return best if len(best) <= 48 else best[:45] + "..."
+
+
 def repeating_groups(columns):
     """{stem: [cols]} for stem+number groups (stems under 2 letters ignored)."""
     by_stem = {}
@@ -158,7 +169,9 @@ def classify(table, detail, strong, suspected, keys, col_stats, n_rows):
     for col, word, pct in delimited_columns(col_stats, n_rows):
         one_nf.append({"form": "1NF", "kind": "delimited",
                        "determinant": [], "dependents": [col],
-                       "detail": word, "pct": pct, "equivalent": False})
+                       "detail": word, "pct": pct,
+                       "sample": _delim_sample(col_stats.get(col, {})),
+                       "equivalent": False})
     for stem, cols in repeating_groups(columns).items():
         one_nf.append({"form": "1NF", "kind": "repeating",
                        "determinant": [], "dependents": sorted(cols),

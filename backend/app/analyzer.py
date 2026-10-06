@@ -150,7 +150,7 @@ def analyze_table(conn, db_type, detail, schema, scan_id, ref_cache,
                  verdict["normal_form"], verdict["status"],
                  extra={"scan_id": scan_id, "step": "classify", "table": name})
 
-    result = _assemble(name, detail, loaded, verdict, scored)
+    result = _assemble(name, detail, loaded, verdict, scored, keys)
     secs = time.monotonic() - t0
     return result, units, secs
 
@@ -236,16 +236,30 @@ def _promote_with_cross_table(conn, db_type, detail, schema, scan_id,
             continue
 
 
-def _assemble(name, detail, loaded, verdict, scored):
+def _assemble(name, detail, loaded, verdict, scored, keys):
     fk_of = {}
     for fk in detail.get("fks") or []:
         for c, r in zip(fk.get("columns") or [], fk.get("referred_columns") or []):
             fk_of[c] = {"table": fk.get("referred_table"), "column": r}
     pk = set(detail.get("pk") or [])
     kept = [s for s in scored if s.tier in ("strong", "suspected")]
+    key_list = keys.get("keys", []) if keys else []
+    primary = key_list[0] if key_list else None
+    if primary is None:
+        key_confidence = None
+    elif primary.get("source") == "declared":
+        key_confidence = "High"
+    elif all(loaded.null_ratio.get(c, 0.0) <= 0.0
+             for c in primary.get("columns", [])):
+        key_confidence = "High"
+    else:
+        key_confidence = "Medium"
     return {
         "name": name, "row_count": loaded.row_count, "sampled": loaded.sampled,
         "status": verdict["status"], "normal_form": verdict["normal_form"],
+        "keys": [{"columns": list(k.get("columns", [])),
+                  "source": k.get("source", "inferred")} for k in key_list],
+        "key_confidence": key_confidence,
         "columns": [{"name": c["name"], "type": str(c.get("type", "")),
                      "pk": c["name"] in pk, "fk": fk_of.get(c["name"]),
                      "nullable": bool(c.get("nullable", True))}
@@ -418,7 +432,8 @@ def analyze_on_connection(engine, conn, params, selected, schema=None,
                     {"name": name, "status": res["status"],
                      "normal_form": res["normal_form"],
                      "duration_seconds": round(secs, 2)})
-                if res["status"] in ("faulted", "suspected"):
+                if res["status"] in ("faulted", "suspected",
+                                       "insufficient_data"):
                     result["tables"].append(res)
                 emit({"event": "table_done", "table": name,
                       "status": res["status"],
@@ -515,6 +530,7 @@ def _scan_head(params, schema, scan_id, started, duration, status,
             "host": params.host, "database": params.database,
             "schema": schema, "started_at": started.isoformat(),
             "duration_seconds": round(duration, 1), "status": status,
+            "database_count": getattr(params, "database_count", None),
             "selected_tables": list(selected),
             "counts": {"total_in_db": total_in_db, "selected": len(selected),
                        "not_selected": total_in_db - len(selected),

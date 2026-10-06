@@ -19,3 +19,4 @@ class ConnectRequest(BaseModel):
 
 class ScanStartRequest(ConnectRequest):
     tables: list[str] = []
+    database_count: int | None = None

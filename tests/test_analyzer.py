@@ -95,6 +95,9 @@ def test_scan_end_to_end(sqlite_conn):
     assert by_name["tiny"]["status"] == "insufficient_data"
     full = {t["name"]: t for t in out["tables"]}
     assert "orders" in full and "cleanone" not in full
+    assert full["orders"]["keys"] == [{"columns": ["id"], "source": "declared"}]
+    assert full["orders"]["key_confidence"] == "High"
+    assert full["orders"]["row_count"] == 120
     kinds = {e["event"] for e in events}
     assert {"scan_started", "estimate", "table_started", "table_step",
             "table_done", "scan_done"} <= kinds

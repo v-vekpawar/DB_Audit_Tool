@@ -54,6 +54,9 @@ function buildConnectPayload(form, extra) {
     ssl: !!form.ssl,
   };
   if (extra && extra.tables) body.tables = extra.tables;
+  if (extra && extra.database_count != null) {
+    body.database_count = extra.database_count;
+  }
   return body;
 }
 
@@ -124,182 +127,275 @@ function wrapText(s, maxChars) {
   return lines.length > 0 ? lines : [""];
 }
 
-const SVG_COLORS = {
-  ink: "#1c211d",
-  muted: "#5c655e",
-  border: "#d7dbd2",
-  accent: "#2f4b8f",
-  accentSoft: "#e3e9f6",
-  danger: "#a3291f",
-  dangerSoft: "#f6e4e2",
-  warning: "#8a5a00",
-  warningSoft: "#f6ecd9",
+/** Numeric confidence (0-100) to a High/Medium/Low pill. Pure. */
+function confLevel(confidence) {
+  const n = Number(confidence);
+  if (n >= 80) return "High";
+  if (n >= 60) return "Medium";
+  return "Low";
+}
+
+/** Sanitises a value for use in id/aria-controls attributes. Pure. */
+function escId(value) {
+  return String(value == null ? "" : value)
+    .replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 60) || "t";
+}
+
+/** Thousands separator for row counts. Pure. */
+function fmtInt(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return String(n == null ? "—" : n);
+  return v.toLocaleString("en-US");
+}
+
+const STRIP_TITLES = {
+  transitive: "Transitive dependency (violates 3NF).",
+  partial: "Partial dependency (violates 2NF).",
+  bcnf: "Non-key determinant (violates BCNF).",
+  "no-key": "No usable key (below 1NF).",
+  delimited: "Multi-valued cells (below 1NF).",
+  repeating: "Repeating group (below 1NF).",
 };
-const SVG_SANS = "system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
-const SVG_MONO = "ui-monospace, Menlo, Consolas, monospace";
+
+/** Bold strip title for a violation. Pure. */
+function stripTitle(v) {
+  if (v && STRIP_TITLES[v.kind]) return STRIP_TITLES[v.kind];
+  return `Violates ${((v && v.form) || "?")}.`;
+}
+
+/** Worst violation first: 1NF > 2NF > 3NF > BCNF (same order as recommend). Pure. */
+function worstViolation(full) {
+  const order = { "1NF": 0, "2NF": 1, "3NF": 2, "BCNF": 3 };
+  let worst = null;
+  for (const v of (full && full.violations) || []) {
+    if (!worst || (order[v.form] ?? 9) < (order[worst.form] ?? 9)) worst = v;
+  }
+  return worst;
+}
+
+/** Primary key columns: backend keys first, PK flags as fallback. Pure. */
+function keyColumns(full) {
+  if (full && full.keys && full.keys.length > 0 && full.keys[0].columns) {
+    return full.keys[0].columns;
+  }
+  return ((full && full.columns) || []).filter((c) => c.pk).map((c) => c.name);
+}
+
+/** The FD behind the worst violation (for the graph + example table). Pure. */
+function primaryFD(full, worst) {
+  const fds = (full && full.fds) || [];
+  if (!worst || !worst.determinant || worst.determinant.length === 0) return null;
+  const key = worst.determinant.join("\0");
+  return fds.find((f) => (f.determinant || []).join("\0") === key &&
+    (worst.dependents || []).includes(f.dependent))
+    || fds.find((f) => (f.determinant || []).join("\0") === key)
+    || null;
+}
+
+function graphNodeW(label) {
+  return Math.min(220, Math.max(72, 16 + String(label).length * 7.2));
+}
+
+function truncLabel(label, n) {
+  const s = String(label == null ? "?" : label);
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
 
 /**
- * Builds the full graph-like faulted-table card as an SVG string.
- * `full`: table result (columns, violations, fds, recommendation, sampled).
- * `status`: "faulted" | "suspected" (suspected renders dimmed).
+ * Dependency-graph SVG: key → determinant → dependent, with a dashed
+ * "transitive" arc (transitive only) or a double-headed arrow (equivalent).
+ * Pure — same palette as the surrounding card.
+ */
+function buildGraphSVG(uid, keyLabel, detLabel, depLabel, opts) {
+  const o = opts || {};
+  const ink = "#1c211d", danger = "#a3291f", accent = "#2f4b8f";
+  const w1 = graphNodeW(keyLabel), w2 = graphNodeW(detLabel),
+    w3 = graphNodeW(depLabel);
+  const gap = 30, pad = 4, nh = 32, ny = 4;
+  const x1 = pad, x2 = x1 + w1 + gap, x3 = x2 + w2 + gap;
+  const W = Math.round(x3 + w3 + pad);
+  const H = o.arc ? 92 : 44;
+  const cy = ny + nh / 2;
+  const node = (x, w, label, fill, stroke, color) =>
+    `<rect x="${x}" y="${ny}" width="${w}" height="${nh}" rx="4" fill="${fill}" stroke="${stroke}" stroke-width="1.5"/>` +
+    `<text x="${x + w / 2}" y="${ny + 20}" text-anchor="middle" font-size="12" font-weight="600" fill="${color}" font-family="ui-monospace, Menlo, Consolas, monospace">${esc(label)}</text>`;
+  const arrow = o.double
+    ? ` marker-start="url(#${uid}m)" marker-end="url(#${uid}m)"`
+    : ` marker-end="url(#${uid}m)"`;
+  const color2 = o.double ? danger : ink;
+  let s = `<svg class="rc-graph" viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${esc(keyLabel)} determines ${esc(detLabel)}, which determines ${esc(depLabel)}${o.arc ? "; dashed arrow marks the transitive dependency" : ""}${o.double ? "; double-headed arrow marks equivalent columns" : ""}">`;
+  s += `<defs><marker id="${uid}m" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6" fill="none" stroke="${o.double ? danger : ink}" stroke-width="1.5"/></marker>` +
+    `<marker id="${uid}r" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6" fill="none" stroke="${danger}" stroke-width="1.5"/></marker></defs>`;
+  s += node(x1, w1, keyLabel, "#e3e9f6", accent, accent);
+  s += node(x2, w2, detLabel, "#e6ebe6", "#b9c0b3", ink);
+  s += node(x3, w3, depLabel, "#f6e4e2", danger, danger);
+  s += `<line x1="${x1 + w1 + 2}" y1="${cy}" x2="${x2 - 2}" y2="${cy}" stroke="${ink}" stroke-width="1.5" marker-end="url(#${uid}m)"/>`;
+  s += `<line x1="${x2 + w2 + 2}" y1="${cy}" x2="${x3 - 2}" y2="${cy}" stroke="${color2}" stroke-width="1.5"${arrow}/>`;
+  if (o.arc) {
+    const kx = x1 + w1 / 2, dx = x3 + w3 / 2;
+    s += `<path d="M${kx},${ny + nh + 2} Q${W / 2},${H - 2} ${dx},${ny + nh + 4}" fill="none" stroke="${danger}" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#${uid}r)"/>`;
+    s += `<text x="${W / 2}" y="${H - 12}" text-anchor="middle" font-size="11" fill="${danger}" font-family="system-ui, sans-serif">${esc(o.arc)}</text>`;
+  }
+  return s + `</svg>`;
+}
+
+/**
+ * Builds the faulted-table card as an HTML string (compact redesign).
+ * `full`: table result (columns, keys, violations, fds, recommendation...).
+ * `status`: "faulted" | "suspected" (suspected renders amber, not dimmed).
+ * `expanded`: Set of open toggle keys (`<table>‖ev‖<i>`, `<table>‖sugg`).
  * Pure — Node-tested against a fixture covering every violation kind.
  */
-function buildCardSVG(name, full, status) {
-  const C = SVG_COLORS;
-  const W = 760;
-  const pad = 16;
-  const rowH = 24;
+function buildCardHTML(name, full, status, expanded) {
+  const exp = expanded instanceof Set ? expanded : new Set();
+  const f = full || {};
   const suspected = status === "suspected";
-  const nf = (suspected ? "possibly " : "") + (full.normal_form || "?");
-  const badgeColor = suspected ? C.warning : C.danger;
-  const badgeSoft = suspected ? C.warningSoft : C.dangerSoft;
-
-  const detCols = new Set();
-  const depCols = new Set();
-  const equivCols = new Set();
-  const detGroups = []; // {key, det:[cols], deps:[cols], equiv}
-  for (const f of full.fds || []) {
-    let g = detGroups.find((x) => x.key === f.determinant.join("\0"));
-    if (!g) {
-      g = { key: f.determinant.join("\0"), det: f.determinant, deps: [],
-        equiv: false };
-      detGroups.push(g);
-    }
-    if (!g.deps.includes(f.dependent)) g.deps.push(f.dependent);
-    g.equiv = g.equiv || !!f.equivalent;
-    for (const d of f.determinant) detCols.add(d);
-    depCols.add(f.dependent);
-    if (f.equivalent) {
-      for (const d of f.determinant) equivCols.add(d);
-      equivCols.add(f.dependent);
-    }
-  }
-
-  let h = 0;
+  const nf = (suspected ? "possibly " : "") + (f.normal_form || "?");
+  const safe = escId(name);
   const parts = [];
-  const open = suspected
-    ? `<svg width="${W}" viewBox="0 0 ${W} PLACEHOLDER" font-family="${SVG_SANS}" role="img" aria-label="${esc(name)} card"><g opacity="0.72">`
-    : `<svg width="${W}" viewBox="0 0 ${W} PLACEHOLDER" font-family="${SVG_SANS}" role="img" aria-label="${esc(name)} card"><g>`;
-  parts.push(open);
-  h += 12;
-  // Header.
-  parts.push(`<text x="${pad}" y="${h + 20}" font-size="16" font-weight="600" font-family="${SVG_MONO}" fill="${C.ink}">${esc(name)}</text>`);
-  const badgeW = 12 + nf.length * 7.2;
-  parts.push(`<rect x="${W - pad - badgeW}" y="${h + 4}" width="${badgeW}" height="24" rx="12" fill="${badgeSoft}"/>`);
-  parts.push(`<text x="${W - pad - badgeW / 2}" y="${h + 21}" font-size="12" font-weight="600" text-anchor="middle" fill="${badgeColor}">${esc(nf)}</text>`);
-  h += 40;
-  if (full.sampled) {
-    parts.push(`<text x="${pad}" y="${h + 4}" font-size="12" fill="${C.muted}">analysed first 50,000 rows in key order (sampled)</text>`);
-    h += 20;
+
+  // Header: name, NF pill, Hide card; meta: rows · columns · Key chips · confidence.
+  const cols = f.columns || [];
+  const keys = keyColumns(f);
+  const keyChips = keys.map((k) => `<span class="key-chip">${esc(k)}</span>`).join(" ");
+  const conf = f.key_confidence;
+  const confPill = conf
+    ? `<span class="pill pill-${conf === "High" ? "high" : "medium"}">${esc(conf)}</span>` : "";
+  parts.push(`<div class="rc-head"><span class="rc-title mono">${esc(name)}</span>` +
+    `<span class="pill ${suspected ? "pill-nf-suspected" : "pill-nf-faulted"}">${esc(nf)}</span>` +
+    `<button type="button" class="btn btn-secondary btn-small rc-hide" data-act="hide">Hide card</button></div>`);
+  parts.push(`<div class="rc-meta">${fmtInt(f.row_count)} rows · ${cols.length} columns` +
+    (keys.length > 0 ? ` · Key ${keyChips} ${confPill}`
+      : ` · <span class="rc-muted">no key declared or found</span>`) +
+    (f.sampled ? ` · <span class="rc-muted">sampled (first 50,000 rows)</span>` : "") +
+    `</div>`);
+
+  // Violation strips, one per violation.
+  for (const v of f.violations || []) {
+    parts.push(`<div class="rc-strip ${suspected ? "rc-strip-suspected" : "rc-strip-faulted"}">` +
+      `<span class="rc-strip-title">${esc(stripTitle(v))}</span> ` +
+      `<span>${esc(v.reason || "")}</span></div>`);
   }
-  // Column rows.
-  const y0 = h + 8;
-  const cy = (i) => y0 + i * rowH + 15;
-  const cols = full.columns || [];
-  cols.forEach((col, i) => {
-    const y = y0 + i * rowH;
-    if (depCols.has(col.name)) {
-      parts.push(`<rect x="8" y="${y}" width="${W - 16}" height="22" rx="4" fill="${C.dangerSoft}"/>`);
+
+  // Body: graph + example (FD kinds) or column chips (1NF kinds).
+  const worst = worstViolation(f);
+  const pfd = primaryFD(f, worst);
+  const equiv = !!(worst && (worst.equivalent || (pfd && pfd.equivalent)));
+  if (worst && (worst.kind === "transitive" || worst.kind === "partial")) {
+    const keyLabel = truncLabel((keys.length > 0 ? keys : ["?"]).join(", "), 28);
+    const detLabel = truncLabel((worst.determinant || ["?"]).join(", "), 28);
+    const depLabel = truncLabel((worst.dependents || ["?"]).join(", "), 28);
+    const labels = `<div class="rc-graphwrap"><p class="rc-lbl">Dependency graph</p>` +
+      buildGraphSVG(`g-${safe}-`, keyLabel, detLabel, depLabel,
+        { arc: worst.kind === "transitive" && !equiv ? "transitive" : null,
+          double: equiv }) +
+      (equiv ? `<p class="rc-eq"><span class="eq-chip">EQ</span> equivalent columns</p>` : "") +
+      `</div>`;
+    let example = "";
+    const examples = (pfd && pfd.evidence && pfd.evidence.examples) || [];
+    if (pfd && examples.length > 0) {
+      const detCols = pfd.determinant || [];
+      const ths = detCols.map((c) => `<th>${esc(c)}</th>`).join("") +
+        `<th>${esc(pfd.dependent)}</th><th>rows</th>`;
+      const rows = examples.slice(0, 3).map((ex) => {
+        const det = detCols.map((_, i) => String(((ex.det || [])[i]) == null ? "" : (ex.det || [])[i]).slice(0, 24));
+        const tds = det.map((v) => `<td>${esc(v)}</td>`).join("") +
+          `<td>${esc(String(ex.dep == null ? "" : ex.dep).slice(0, 24))}${ex.exception ? " (exception)" : ""}</td>` +
+          `<td>${esc(ex.rows)}</td>`;
+        return `<tr${ex.exception ? ` class="rc-except"` : ""}>${tds}</tr>`;
+      }).join("");
+      example = `<div class="rc-example"><p class="rc-lbl">Example from data</p>` +
+        `<div class="rc-tablewrap"><table class="rc-table mono"><tbody><tr>${ths}</tr>${rows}</tbody></table></div></div>`;
     }
-    let x = 76;
-    if (col.pk) {
-      parts.push(`<rect x="${x}" y="${y + 3}" width="26" height="16" rx="8" fill="${C.accent}"/>`);
-      parts.push(`<text x="${x + 13}" y="${y + 16}" font-size="10" font-weight="700" text-anchor="middle" fill="#ffffff">PK</text>`);
-      x += 30;
+    parts.push(`<div class="rc-body${example ? "" : " rc-body-single"}">${labels}${example}</div>`);
+  } else if (worst && (worst.kind === "delimited" || worst.kind === "repeating" || worst.kind === "no-key")) {
+    const chipCols = worst.kind === "no-key"
+      ? cols.map((c) => c.name) : (worst.dependents || []);
+    const chips = chipCols.map((c) => `<span class="chip-mono">${esc(c)}</span>`).join(" ");
+    let extra = "";
+    if (worst.kind === "delimited" && worst.sample != null) {
+      extra = `<p class="rc-sample">e.g. <span class="mono">${esc(worst.sample)}</span></p>`;
     }
-    if (col.fk) {
-      parts.push(`<rect x="${x}" y="${y + 3}" width="26" height="16" rx="8" fill="none" stroke="${C.accent}" stroke-width="1.5"/>`);
-      parts.push(`<text x="${x + 13}" y="${y + 16}" font-size="10" font-weight="700" text-anchor="middle" fill="${C.accent}">FK</text>`);
-      x += 30;
-    }
-    const bold = detCols.has(col.name) ? ' font-weight="700"' : "";
-    parts.push(`<text x="${x}" y="${y + 16}" font-size="13" font-family="${SVG_MONO}" fill="${C.ink}"${bold}>${esc(col.name)}</text>`);
-    let tx = x + col.name.length * 7.8 + 8;
-    if (detCols.has(col.name)) {
-      parts.push(`<rect x="${tx}" y="${y + 3}" width="32" height="16" rx="8" fill="none" stroke="${C.muted}" stroke-width="1"/>`);
-      parts.push(`<text x="${tx + 16}" y="${y + 16}" font-size="10" text-anchor="middle" fill="${C.muted}">DET</text>`);
-      tx += 36;
-    }
-    if (equivCols.has(col.name)) {
-      parts.push(`<rect x="${tx}" y="${y + 3}" width="28" height="16" rx="8" fill="none" stroke="${C.muted}" stroke-width="1"/>`);
-      parts.push(`<text x="${tx + 14}" y="${y + 16}" font-size="10" text-anchor="middle" fill="${C.muted}">EQ</text>`);
-    }
-  });
-  const colBlockH = cols.length * rowH;
-  // Arrows in the gutter (x 8..64): one spine per determinant.
-  detGroups.forEach((g, gi) => {
-    const sx = 52 - Math.min(gi, 3) * 13;
-    const involved = [];
-    cols.forEach((col, i) => {
-      if (g.det.includes(col.name) || g.deps.includes(col.name)) involved.push(i);
-    });
-    if (involved.length < 2) return;
-    const top = cy(involved[0]);
-    const bottom = cy(involved[involved.length - 1]);
-    const color = C.danger;
-    const markers = g.equiv
-      ? ` marker-start="url(#arrEq)" marker-end="url(#arrEq)"`
-      : ` marker-end="url(#arr)"`;
-    parts.push(`<line x1="${sx}" y1="${top}" x2="${sx}" y2="${bottom}" stroke="${color}" stroke-width="2"${markers}/>`);
-    cols.forEach((col, i) => {
-      if (g.det.includes(col.name)) {
-        parts.push(`<line x1="${sx}" y1="${cy(i)}" x2="68" y2="${cy(i)}" stroke="${C.accent}" stroke-width="2"/>`);
-      } else if (g.deps.includes(col.name)) {
-        parts.push(`<line x1="${sx}" y1="${cy(i)}" x2="68" y2="${cy(i)}" stroke="${color}" stroke-width="1.5"/>`);
-      }
-    });
-  });
-  h = y0 + colBlockH + 12;
-  // Evidence boxes, one per FD.
-  for (const f of full.fds || []) {
-    const ev = f.evidence || {};
+    parts.push(`<div class="rc-body rc-body-single"><div><p class="rc-lbl">Offending columns</p>` +
+      `<p class="rc-chips">${chips}</p>${extra}</div></div>`);
+  }
+
+  // FD lines with collapsed Evidence panels.
+  (f.fds || []).forEach((fd, i) => {
+    const level = confLevel(fd.confidence);
+    const key = `${name}‖ev‖${i}`;
+    const open = exp.has(key);
+    const eid = `ev-${safe}-${i}`;
+    const eq = fd.equivalent ? `<span class="eq-chip">EQ</span>` : "";
+    const exc = (fd.exceptions || 0) > 0
+      ? `<span class="rc-exc">${fd.exceptions} exception row${fd.exceptions === 1 ? "" : "s"}</span>` : "";
+    parts.push(`<div class="rc-fd"><span class="rc-fdnum">FD ${i + 1}</span>` +
+      `<span class="mono"><strong>${esc((fd.determinant || []).join(", "))}</strong> → ${esc(fd.dependent)}${eq}</span>` +
+      `<span class="pill pill-${level.toLowerCase()}">${level} · ${esc(fd.confidence)}</span>${exc}` +
+      `<button type="button" class="mini-toggle" data-act="ev" data-key="${esc(key)}" aria-expanded="${open}" aria-controls="${eid}">Evidence ${open ? "▴" : "▾"}</button></div>`);
+    const ev = fd.evidence || {};
     const lines = [];
-    lines.push(`Confidence Score: ${f.confidence} (chance of coincidence about ${((f.coincidence && f.coincidence.text) || "—")})`);
     lines.push(`${ev.distinct_det ?? "—"} distinct values · ${ev.repeated_rows ?? "—"} repeated rows · ${ev.candidates_tested ?? "—"} candidates tested`);
-    if ((f.exceptions || 0) > 0) {
-      lines.push(`${f.exceptions} exception rows (marked below) — holds with exceptions`);
+    lines.push(`Chance of coincidence: about ${((fd.coincidence && fd.coincidence.text) || "—")}`);
+    if ((fd.exceptions || 0) > 0) {
+      lines.push(`Holds with ${fd.exceptions} exception rows`);
     }
     const cross = ev.cross_table;
     if (cross && cross.supported) {
       const pct = cross.match_rate != null ? (cross.match_rate * 100).toFixed(1) : "—";
-      lines.push(`supported by ${cross.ref_table}.${cross.ref_column}: ${pct}% match`);
+      lines.push(`Also seen in ${cross.ref_table}.${cross.ref_column}: ${pct}% match`);
     }
     if (ev.naming) {
-      lines.push(`naming affinity: ${(f.determinant || []).join(", ")} / ${f.dependent}`);
+      lines.push(`Similar names: ${(fd.determinant || []).join(", ")} / ${fd.dependent}`);
     }
     for (const ex of (ev.examples || []).slice(0, 3)) {
       const detVals = (ex.det || []).map((v) => String(v).slice(0, 24)).join(", ");
       lines.push(`e.g. ${detVals} → ${String(ex.dep).slice(0, 24)} in ${ex.rows} rows${ex.exception ? " (exception)" : ""}`);
     }
-    const boxH = 12 + (lines.length + 1) * 17 + 10;
-    parts.push(`<rect x="${pad}" y="${h}" width="${W - pad * 2}" height="${boxH}" rx="4" fill="#ffffff" stroke="${C.border}" stroke-width="1"/>`);
-    parts.push(`<text x="${pad + 10}" y="${h + 19}" font-size="12" font-weight="600" fill="${C.ink}">${esc((f.determinant || []).join(", "))} → ${esc(f.dependent)}${f.equivalent ? " (equivalent)" : ""}</text>`);
-    lines.forEach((ln, li) => {
-      parts.push(`<text x="${pad + 10}" y="${h + 19 + (li + 1) * 17}" font-size="12" fill="${C.ink}">${esc(ln)}</text>`);
-    });
-    h += boxH + 10;
+    parts.push(`<div class="rc-evidence" id="${eid}"${open ? "" : " hidden"}>` +
+      lines.map((ln) => `<p>${esc(ln)}</p>`).join("") + `</div>`);
+  });
+
+  // Recommendation with collapsed suggested-tables panel (FD kinds only).
+  if (f.recommendation) {
+    parts.push(`<div class="rc-rec"><span class="rc-rec-title">Recommendation.</span> ` +
+      `${esc(f.recommendation)}` +
+      (worst && (worst.kind === "transitive" || worst.kind === "partial")
+        ? (() => {
+          const key = `${name}‖sugg`;
+          const open = exp.has(key);
+          const eid = `sugg-${safe}`;
+          return ` <div class="rc-suggtoggle"><button type="button" class="mini-toggle" data-act="sugg" data-key="${esc(key)}" aria-expanded="${open}" aria-controls="${eid}">Show suggested tables ${open ? "▴" : "▾"}</button></div>`;
+        })() : "") +
+      `</div>`);
+    if (worst && (worst.kind === "transitive" || worst.kind === "partial")) {
+      const key = `${name}‖sugg`;
+      const open = exp.has(key);
+      const eid = `sugg-${safe}`;
+      const det = worst.determinant || [];
+      const deps = worst.dependents || [];
+      const rest = cols.map((c) => c.name)
+        .filter((n) => !keys.includes(n) && !det.includes(n) && !deps.includes(n));
+      const shown = rest.slice(0, 8);
+      const more = rest.length - shown.length;
+      const li = (n, tag) => `<li>${esc(n)}${tag ? ` <span class="rc-tag">${esc(tag)}</span>` : ""}</li>`;
+      const orig = keys.map((n) => li(n, "PK")).join("") +
+        det.map((n) => li(n, "link")).join("") +
+        shown.map((n) => li(n, "")).join("") +
+        (more > 0 ? `<li class="rc-muted">+ ${more} more</li>` : "");
+      const newTitle = equiv
+        ? `new lookup table (keyed by ${det.join(", ")})`
+        : `new table (keyed by ${det.join(", ")})`;
+      const newbox = det.map((n) => li(n, "key")).join("") +
+        deps.map((n) => li(n, "")).join("");
+      parts.push(`<div class="rc-sugg" id="${eid}"${open ? "" : " hidden"}>` +
+        `<div class="rc-split"><div class="rc-tbox rc-tbox-orig"><h5>${esc(name)}</h5><ul>${orig}</ul></div>` +
+        `<span class="rc-splitarr" aria-hidden="true">→</span>` +
+        `<div class="rc-tbox rc-tbox-new"><h5>${esc(newTitle)}</h5><ul>${newbox}</ul></div></div>` +
+        `<p class="rc-muted rc-caption">Illustrative sketch — not runnable DDL.</p></div>`);
+    }
   }
-  // Reason + recommendation boxes.
-  const boxes = [];
-  for (const v of full.violations || []) {
-    if (v.reason) boxes.push({ title: "Why this fails " + v.form + ": ", body: v.reason, fill: C.warningSoft });
-  }
-  if (full.recommendation) {
-    boxes.push({ title: "Recommendation: ", body: full.recommendation, fill: C.accentSoft });
-  }
-  for (const b of boxes) {
-    const lines = wrapText(b.title + b.body, 100);
-    const boxH = 12 + lines.length * 17 + 10;
-    parts.push(`<rect x="${pad}" y="${h}" width="${W - pad * 2}" height="${boxH}" rx="4" fill="${b.fill}"/>`);
-    lines.forEach((ln, li) => {
-      parts.push(`<text x="${pad + 10}" y="${h + 19 + li * 17}" font-size="12" fill="${C.ink}">${esc(ln)}</text>`);
-    });
-    h += boxH + 10;
-  }
-  h += 4;
-  parts.push(`<defs><marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6" fill="none" stroke="${C.danger}" stroke-width="1.5"/></marker><marker id="arrEq" markerWidth="8" markerHeight="8" refX="3" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 M6,0 L0,3 L6,6" fill="none" stroke="${C.danger}" stroke-width="1.2"/></marker></defs>`);
-  parts.push(`</g></svg>`);
-  return parts.join("\n").replace("PLACEHOLDER", String(h));
+  return parts.join("\n");
 }
 
 /**
@@ -386,8 +482,13 @@ const logic = {
   formatError,
   formatScanTime,
   esc,
+  escId,
   wrapText,
-  buildCardSVG,
+  confLevel,
+  stripTitle,
+  worstViolation,
+  keyColumns,
+  buildCardHTML,
 };
 
 if (typeof module !== "undefined" && module.exports) {
@@ -469,6 +570,7 @@ function initApp() {
     cards: new Map(), // name -> full table result
     openCard: null, // name with its card expanded below its row
     autoFollow: true, // follow the latest finished card during live scans
+    expanded: new Set(), // open card toggles: "<table>‖ev‖<i>", "<table>‖sugg"
     lastExpanded: false, // last-scan details unfolded
     notices: [],
     counts: null,
@@ -599,6 +701,7 @@ function initApp() {
     state.cards = new Map();
     state.openCard = null;
     state.autoFollow = true;
+    state.expanded = new Set();
     state.notices = [];
     state.counts = null;
     state.scanStatus = null;
@@ -808,7 +911,8 @@ function initApp() {
           database: isOracle ? "" : state.selectedDb,
           schema: isOracle ? state.selectedDb
             : (state.connection.schema || null),
-          tables: [...state.selected] })),
+          tables: [...state.selected],
+          database_count: state.databases.length })),
       });
       enterScan(data.scan_id, [...state.selected], true);
     } catch (e) { /* shown */ } finally {
@@ -838,6 +942,7 @@ function initApp() {
     state.cards = new Map();
     state.openCard = null;
     state.autoFollow = true;
+    state.expanded = new Set();
     state.notices = [];
     state.counts = null;
     state.scanStatus = "running";
@@ -1108,19 +1213,40 @@ function initApp() {
     }
     // Accordion: at most one card open, directly below its status row
     // (rendered inside renderStatusList). Clicking its row again hides it.
-    const anyCards = state.cards.size > 0;
+    // Only faulted/suspected tables have viewable cards; insufficient_data
+    // entries travel in the payload for the PDF but open no card.
+    const viewable = [...state.statuses.values()]
+      .some((st) => st.state === "faulted" || st.state === "suspected");
     const openShown = state.openCard && state.cards.has(state.openCard);
-    els.cardsHint.hidden = !(anyCards && !openShown);
+    els.cardsHint.hidden = !(viewable && !openShown);
   }
 
-  // Full SVG graph card (Step 11). Same container and `card-<name>` ids
-  // as the Step-10 placeholder, so status-row click-to-scroll is unchanged.
+  // Full HTML result card. Same container and `card-<name>` ids
+  // as before, so status-row click-to-scroll is unchanged. Toggle
+  // buttons are wired here; open/closed state lives in state.expanded
+  // so it survives the full re-render on every stream event.
   function renderSimpleCard(name, full) {
     const st = state.statuses.get(name) || {};
     const article = document.createElement("article");
-    article.className = "card-svg" + (st.state === "suspected" ? " suspected" : "");
+    article.className = "result-card" + (st.state === "suspected" ? " suspected" : "");
     article.id = `card-${name}`;
-    article.innerHTML = logic.buildCardSVG(name, full, st.state === "suspected" ? "suspected" : "faulted");
+    article.innerHTML = logic.buildCardHTML(name, full,
+      st.state === "suspected" ? "suspected" : "faulted", state.expanded);
+    article.querySelectorAll("button[data-act]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const act = btn.getAttribute("data-act");
+        if (act === "hide") {
+          state.openCard = null;
+          state.autoFollow = false;
+        } else {
+          const key = btn.getAttribute("data-key");
+          if (state.expanded.has(key)) state.expanded.delete(key);
+          else state.expanded.add(key);
+        }
+        renderAll();
+      });
+    });
     return article;
   }
 
@@ -1212,6 +1338,7 @@ function initApp() {
     try {
       const data = await apiFetch("/api/scan/last");
       state.totalInDb = (data.scan.counts.total_in_db || 0);
+      state.expanded = new Set();
       ingestResults(data, false);
       state.scanId = data.scan.id || null;
       state.lastExpanded = true;

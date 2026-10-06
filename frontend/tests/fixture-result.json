@@ -2,7 +2,9 @@
   "tables": [
     {
       "name": "t_3nf_transitive", "status": "faulted", "normal_form": "2NF",
-      "sampled": false,
+      "sampled": false, "row_count": 300,
+      "keys": [{"columns": ["order_id"], "source": "declared"}],
+      "key_confidence": "High",
       "columns": [
         {"name": "order_id", "type": "INT", "pk": true, "fk": null},
         {"name": "customer_id", "type": "INT", "pk": false, "fk": null},
@@ -30,7 +32,9 @@
     },
     {
       "name": "t_2nf_partial", "status": "faulted", "normal_form": "1NF",
-      "sampled": false,
+      "sampled": false, "row_count": 300,
+      "keys": [{"columns": ["order_id", "product_id"], "source": "declared"}],
+      "key_confidence": "High",
       "columns": [
         {"name": "order_id", "type": "INT", "pk": true, "fk": null},
         {"name": "product_id", "type": "INT", "pk": true, "fk": null},
@@ -57,14 +61,17 @@
     },
     {
       "name": "t_1nf_delimited", "status": "faulted", "normal_form": "below 1NF",
-      "sampled": false,
+      "sampled": false, "row_count": 120,
+      "keys": [{"columns": ["order_id"], "source": "declared"}],
+      "key_confidence": "High",
       "columns": [
         {"name": "order_id", "type": "INT", "pk": true, "fk": null},
         {"name": "tags", "type": "VARCHAR(60)", "pk": false, "fk": null}
       ],
       "violations": [
         {"form": "1NF", "kind": "delimited", "determinant": [],
-         "dependents": ["tags"],
+         "dependents": ["tags"], "detail": "comma", "pct": 70,
+         "sample": "red, green, blue",
          "reason": "Column tags holds comma-separated lists in 70% of its non-null values."}
       ],
       "fds": [],
@@ -72,7 +79,9 @@
     },
     {
       "name": "t_1nf_repeating", "status": "faulted", "normal_form": "below 1NF",
-      "sampled": false,
+      "sampled": false, "row_count": 60,
+      "keys": [{"columns": ["cust_id"], "source": "declared"}],
+      "key_confidence": "High",
       "columns": [
         {"name": "cust_id", "type": "INT", "pk": true, "fk": null},
         {"name": "phone1", "type": "VARCHAR(16)", "pk": false, "fk": null},
@@ -89,7 +98,9 @@
     },
     {
       "name": "t_suspected", "status": "suspected", "normal_form": "2NF",
-      "sampled": true,
+      "sampled": true, "row_count": 48,
+      "keys": [{"columns": ["id"], "source": "inferred"}],
+      "key_confidence": "High",
       "columns": [
         {"name": "id", "type": "INT", "pk": true, "fk": null},
         {"name": "country_code", "type": "VARCHAR(8)", "pk": false,
@@ -98,7 +109,7 @@
       ],
       "violations": [
         {"form": "3NF", "kind": "transitive", "determinant": ["country_code"],
-         "dependents": ["country_name"],
+         "dependents": ["country_name"], "equivalent": true,
          "reason": "country_name depends on country_code, not on the key (id)."}
       ],
       "fds": [
