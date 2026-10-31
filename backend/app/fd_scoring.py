@@ -118,10 +118,10 @@ def score_fd(coded, labels, fd, m, sampled=False, cross=None):
     rows_in_groups = sum(len(g) for g in repeated_groups.values())
     distinct_det = len(groups)
 
-    if repeated_rows < config.MIN_REPEATED_ROWS or examined == 0:
-        return ScoredFD(det, dep, fd.kind, fd.equivalent, 0, "discarded",
+    if examined == 0:
+        return ScoredFD(det, dep, fd.kind, fd.equivalent, 0, "suspected",
                         exceptions=fd.k, exception_rows=list(fd.exception_rows),
-                        exponent=0.0, coincidence="1 in 1",
+                        exponent=0.0, coincidence="insufficient comparable rows",
                         evidence=_evidence(det, dep, coded, labels, fd, m,
                                            distinct_det, repeated_rows,
                                            rows_in_groups, cross))
@@ -160,12 +160,24 @@ def score_fd(coded, labels, fd, m, sampled=False, cross=None):
         score = min(score, config.SAMPLED_SCORE_CAP)
 
     cross_ok = bool(cross and cross.get("supported"))
-    if score >= config.STRONG_CONFIDENCE or (
-            cross_ok and score >= config.STRONG_CONFIDENCE_CROSS_TABLE):
+    coverage = (rows_in_groups / examined) if examined else 0.0
+    enough_repetition = (repeated_rows >= config.STRONG_MIN_REPEATED_ROWS and
+                         coverage >= config.STRONG_MIN_REPEATED_COVERAGE)
+    if fd.kind == "near":
+        # Near-FDs are never formal proof and therefore never become strong.
+        # Keep only material near-FDs in the main evidence stream.
+        tier = "suspected" if (repeated_rows >= config.MIN_REPEATED_ROWS and
+                                score >= config.SUSPECT_CONFIDENCE) else "discarded"
+    elif enough_repetition and (score >= config.STRONG_CONFIDENCE or (
+            cross_ok and score >= config.STRONG_CONFIDENCE_CROSS_TABLE)):
         tier = "strong"
-    elif score >= config.SUSPECT_CONFIDENCE:
+    elif (repeated_rows >= config.MIN_REPEATED_ROWS and
+          score >= config.SUSPECT_CONFIDENCE):
         tier = "suspected"
     else:
+        # Exact observations with too little repetition or too little
+        # coincidence evidence are retained only as an aggregate count. They
+        # must not drive normal-form classification or flood the main report.
         tier = "discarded"
 
     return ScoredFD(det, dep, fd.kind, fd.equivalent, score, tier,
@@ -188,6 +200,8 @@ def _evidence(det, dep, coded, labels, fd, m, distinct_det, repeated_rows,
           "rows_in_repeated_groups": rows_in_groups,
           "candidates_tested": m, "cross_table": cross,
           "naming": naming_affinity(det, dep), "null_ratio": nulls,
+          "repeated_coverage": (rows_in_groups / n if n else 0.0),
+          "repeated_row_coverage": (repeated_rows / n if n else 0.0),
           "examples": examples, "n": n}
     return ev
 

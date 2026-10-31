@@ -205,10 +205,10 @@ Request and response shapes are in `docs/DESIGN.md`.
 | Setting | Default | Meaning |
 |---|---|---|
 | `SERVER_PORT` | 8770 | Keep launcher scripts in sync |
-| `MAX_LHS_SIZE` | 2 | Max columns in a determinant (free search) |
-| `MAX_LHS_SIZE_LARGE` | 3 | Same, for tables with at least `LARGE_TABLE_ROWS` rows |
+| `MAX_LHS_SIZE` | 6 | Max columns in a TANE determinant for ordinary tables |
+| `MAX_LHS_SIZE_LARGE` | 8 | Same, for large tables; incomplete search is explicitly reported |
 | `LARGE_TABLE_ROWS` | 1000 | Row count from which size-3 determinants are searched |
-| `MAX_ROWS_PER_TABLE` | 50000 | Larger tables are analysed on the first N rows by key order and marked sampled |
+| `MAX_ROWS_PER_TABLE` | 50000 | Larger tables use a bounded sample for candidate discovery; exact FD candidates are validated against the full table where possible and the analysis is marked incomplete |
 | `MIN_ROWS_FOR_DATA_FDS` | 10 | Below this, data-derived FDs are not trusted |
 | `MIN_REPEATED_ROWS` | 5 | Materiality gate: rows that carry duplicated information |
 | `STRONG_CONFIDENCE` | 75 | At or above: confirmed finding |

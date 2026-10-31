@@ -841,3 +841,4 @@ input:focus-visible {
     transition: none !important;
   }
 }
+.rc-fd-summary { margin: 8px 0; font-size: 12px; }

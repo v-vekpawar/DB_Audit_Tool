@@ -1441,3 +1441,19 @@ The key design principle is:
 > practical for smaller schemas; TANE uses the same FD concepts but
 > organizes the search around partitions to handle larger search spaces
 > more efficiently.**
+
+---
+
+# Final Prototype Implementation Policy
+
+The production prototype now uses the following policy:
+
+- Up to `BRUTE_FORCE_MAX_COLUMNS`, brute force is the reference and production search because exhaustive enumeration is practical for small schemas.
+- The partition-based level-wise search is the TANE-style production search for larger schemas.
+- On small schemas, TANE is also run as a parity check. A mismatch is logged as an implementation error and the brute-force result remains authoritative.
+- A determinant-size limit on larger schemas is reported through `fd_discovery.complete=false`; the tool never presents an incomplete search as proof that no FD exists.
+- Exact candidates found on a sampled table are validated against the full database table before they are treated as full-table observations.
+- Near-FDs are never used as formal proof of 2NF/3NF/BCNF.
+- Low-evidence exact FDs are retained as `suspected` instead of being silently discarded, improving recall without turning weak evidence into a faulted normalization result.
+- Candidate keys support arbitrary composite sizes subject to an explicit search-combination safety cap. Inferred keys are data evidence, not schema guarantees.
+- 2NF is checked only against proper subsets of composite candidate keys. A single-column key cannot produce a partial dependency.

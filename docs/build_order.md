@@ -98,7 +98,7 @@ closed form matches the simulation within the agreed tolerance.
 ## Step 7. Keys and normal forms  (-> 3, 5, 6; open design items settled)
  
 - `keys.py`: declared keys (certain), inferred keys (flagged), prime attributes.
-- `normal_forms.py`: 1NF checks (no key, delimited values, repeating groups),
+- `normal_forms.py`: heuristic 1NF checks plus formal 2NF/3NF/BCNF classification,
   2NF, 3NF, BCNF, exact form and table status.
 - `recommend.py`: one-sentence templates.
 - Unit tests for every rule, including the 3NF-but-not-BCNF case (must be `clean`),

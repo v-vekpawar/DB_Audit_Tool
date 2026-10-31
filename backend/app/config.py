@@ -10,19 +10,28 @@ from pathlib import Path
 SERVER_PORT = 8770
 
 # FD search
-MAX_LHS_SIZE = 2
-MAX_LHS_SIZE_LARGE = 3
+# FD discovery. TANE is the production search; brute force is the reference
+# engine used for small tables and parity tests.
+MAX_LHS_SIZE = 6
+MAX_LHS_SIZE_LARGE = 8
+BRUTE_FORCE_MAX_COLUMNS = 10
+RUN_BRUTE_FORCE_PARITY = True
+
 LARGE_TABLE_ROWS = 1000
 
 # Loading
 MAX_ROWS_PER_TABLE = 50000
 MIN_ROWS_FOR_DATA_FDS = 10
+MIN_ROWS_FOR_INFERRED_KEYS = 10
+MAX_INFERRED_KEY_COMBINATIONS = 200000
 
 # Scoring tiers
 MIN_REPEATED_ROWS = 5
 STRONG_CONFIDENCE = 75
 STRONG_CONFIDENCE_CROSS_TABLE = 60
 SUSPECT_CONFIDENCE = 50
+STRONG_MIN_REPEATED_ROWS = 20
+STRONG_MIN_REPEATED_COVERAGE = 0.01
 
 # Near-FDs (dirty data)
 NEAR_FD_MAX_ERROR = 0.03
@@ -55,7 +64,7 @@ LOG_MAX_BYTES = 5 * 1024 * 1024
 LOG_BACKUP_COUNT = 5
 
 # Default ports / schema (convenience only)
-DEFAULT_PORTS = {"mysql": 3306, "postgresql": 5432, "oracle": 1521}
+DEFAULT_PORTS = {"mysql": 3306, "postgresql": 5432, "oracle": 1521, "mssql": 1433}
 DEFAULT_POSTGRES_SCHEMA = "public"
 
 # Last-scan store (absolute path, next to the backend)

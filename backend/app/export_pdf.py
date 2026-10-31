@@ -79,7 +79,8 @@ def _strip_title(v):
         "transitive": "Transitive dependency (violates 3NF).",
         "partial": "Partial dependency (violates 2NF).",
         "bcnf": "Non-key determinant (violates BCNF).",
-        "no-key": "No usable key (below 1NF).",
+        "no-key": "No candidate key established (higher forms cannot be confirmed).",
+        "unknown-key": "Candidate-key search incomplete (higher forms cannot be confirmed).",
         "delimited": "Multi-valued cells (below 1NF).",
         "repeating": "Repeating group (below 1NF).",
     }
@@ -198,6 +199,42 @@ def _chips_row(items, s, chip_from=0):
     return t
 
 
+
+
+def _major_violation_fds(table, kind):
+    """Select the small set of material FDs that explain the violation.
+
+    PDF-only presentation: the analyzer retains every discovered FD, but the
+    report shows only the strongest violation-linked rules. Transitive findings
+    may need three rules to explain the dependency chain; partial/BCNF findings
+    use two at most.
+    """
+    violations = [v for v in (table.get("violations") or []) if v.get("kind") == kind]
+    fds = table.get("fds") or []
+    linked = []
+    seen = set()
+    for v in violations:
+        ef = v.get("evidence_fd") or {}
+        det = tuple(ef.get("determinant") or v.get("determinant") or [])
+        dep = ef.get("dependent") or ((v.get("dependents") or [None])[0])
+        if not det or dep is None:
+            continue
+        for f in fds:
+            if tuple(f.get("determinant") or []) == det and f.get("dependent") == dep:
+                key = (det, dep)
+                if key not in seen:
+                    linked.append(f)
+                    seen.add(key)
+                break
+    if not linked:
+        return []
+    def score(f):
+        return (float(f.get("confidence") or 0),
+                int((f.get("evidence") or {}).get("repeated_rows") or 0))
+    linked.sort(key=score, reverse=True)
+    limit = 3 if kind == "transitive" else 2
+    return linked[:limit]
+
 def _evidence_grid(f, s):
     ev = f.get("evidence") or {}
     conf = f.get("confidence")
@@ -263,17 +300,122 @@ def _node_w(label, font_size=9):
     return min(150, max(46, 10 + stringWidth(str(label), "Courier-Bold", font_size)))
 
 
-def _graph_drawing(key_label, det_label, dep_label, kind, equiv):
+
+
+def _graph_context(table, worst):
+    """Return graph labels grounded in FD evidence and key closure.
+
+    For transitive 3NF findings, prefer a fully explicit A->B->C chain.
+    When the first edge is not present in the discovered-FD list but A is a
+    candidate key, A->B is still logically guaranteed by key closure. Mark
+    that edge as key-implied rather than pretending it was independently
+    discovered.
+    """
+    det = list(worst.get("determinant") or []) if worst else []
+    dep = ((worst.get("dependents") or ["?"])[0]) if worst else "?"
+    fds = table.get("fds") or []
+    if worst and worst.get("kind") == "transitive" and det and dep:
+        target = next((f for f in fds
+                       if list(f.get("determinant") or []) == det
+                       and f.get("dependent") == dep), None)
+        if target:
+            second = next((f for f in fds
+                           if f.get("dependent") == dep
+                           and list(f.get("determinant") or []) != det
+                           and len(f.get("determinant") or []) == 1), None)
+            if second:
+                middle = (second.get("determinant") or [None])[0]
+                first = next((f for f in fds
+                              if list(f.get("determinant") or []) == det
+                              and f.get("dependent") == middle), None)
+                if first:
+                    return {
+                        "first": ", ".join(first.get("determinant") or ["?"]),
+                        "middle": middle or "?",
+                        "last": dep,
+                        "first_edge_label": None,
+                    }
+
+        # A candidate key functionally determines every attribute in the
+        # relation. If the violating determinant is not itself that key, the
+        # key -> determinant edge can therefore explain the transitive path
+        # without inventing an unsupported discovered FD.
+        keys = _key_columns(table)
+        if keys and keys != det and dep not in keys:
+            return {
+                "first": ", ".join(keys),
+                "middle": ", ".join(det),
+                "last": dep,
+                "first_edge_label": "key-implied",
+            }
+
+        return {
+            "first": ", ".join(det or ["?"]),
+            "middle": dep or "?",
+            "last": None,
+            "compact": True,
+            "first_edge_label": None,
+        }
+    keys = _key_columns(table)
+    return {
+        "first": ", ".join(keys or ["?"]),
+        "middle": ", ".join(det or ["?"]),
+        "last": dep or "?",
+        "first_edge_label": None,
+    }
+
+def _graph_drawing(key_label, det_label, dep_label, kind, equiv, first_edge_label=None, compact=False):
     """Dependency graph as vector boxes and arrows in the card palette."""
     fs = 10
+    if compact:
+        key_label = str(key_label or "?")
+        det_label = str(det_label or "?")
+        ws = [_node_w(key_label, fs), _node_w(det_label, fs)]
+        gap, pad, nh, ny = 24, 2, 26, 2
+        xs = [pad, pad + ws[0] + gap]
+        W = xs[1] + ws[1] + pad
+        H = 76
+        cy = ny + nh / 2
+        d = Drawing(W, H)
+        fills = [(GREY_FILL, GREY_EDGE, INK), (DANGER_SOFT, DANGER, DANGER)]
+        for x, w, lab, (bg, edge, fg) in zip(xs, ws, [key_label, dep_label], fills):
+            d.add(Rect(x, H - ny - nh, w, nh, rx=3, fillColor=bg,
+                       strokeColor=edge, strokeWidth=1.2))
+            d.add(String(x + w / 2, H - ny - nh / 2 - 3, lab,
+                         fontName="Courier-Bold", fontSize=fs, fillColor=fg,
+                         textAnchor="middle"))
+        x1, x2 = xs[0] + ws[0] + 1, xs[1] - 1
+        d.add(Line(x1, H - cy, x2, H - cy, strokeColor=INK, strokeWidth=1.2))
+        d.add(Line(x2, H - cy, x2 - 5, H - cy + 2.5, strokeColor=INK, strokeWidth=1.2))
+        d.add(Line(x2, H - cy, x2 - 5, H - cy - 2.5, strokeColor=INK, strokeWidth=1.2))
+        kx, dx = xs[0] + ws[0] / 2, xs[1] + ws[1] / 2
+        y0 = H - ny - nh - 3
+        ctrl = y0 - 46
+        prev = None
+        for i in range(25):
+            u = i / 24
+            x = (1 - u) ** 2 * kx + 2 * (1 - u) * u * (kx + dx) / 2 + u ** 2 * dx
+            y = (1 - u) ** 2 * y0 + 2 * (1 - u) * u * ctrl + u ** 2 * y0
+            if prev is not None:
+                d.add(Line(prev[0], prev[1], x, y, strokeColor=DANGER, strokeWidth=1.2, strokeDashArray=[4, 3]))
+            prev = (x, y)
+        mid_y = 0.25 * y0 + 0.5 * ctrl + 0.25 * y0
+        d.add(String((kx + dx) / 2, mid_y - 12, "transitive",
+                     fontName="Helvetica", fontSize=8, fillColor=DANGER, textAnchor="middle"))
+        if W > 470:
+            f = 470 / W
+            d.scale(f, f)
+            d.width, d.height = W * f, H * f
+        return d
     labels = [str(key_label or "?"), str(det_label or "?"),
               str(dep_label or "?")]
     labels = [l if len(l) <= 28 else l[:27] + "..." for l in labels]
     ws = [_node_w(l, fs) for l in labels]
-    gap, pad, nh, ny = 24, 2, 26, 2
+    gap, pad, nh = 24, 2, 26
+    ny = 10 if first_edge_label else 2
     xs = [pad, pad + ws[0] + gap, pad + ws[0] + gap + ws[1] + gap]
     W = xs[2] + ws[2] + pad
-    H = 76 if kind == "transitive" and not equiv else 34
+    H = (88 if first_edge_label else 76) if kind in ("transitive", "partial") and not equiv else (46 if first_edge_label else 34)
     cy = ny + nh / 2
     d = Drawing(W, H)
     fills = [(ACCENT_SOFT, ACCENT, ACCENT), (GREY_FILL, GREY_EDGE, INK),
@@ -287,7 +429,12 @@ def _graph_drawing(key_label, det_label, dep_label, kind, equiv):
     for a, b, color in ((0, 1, INK), (1, 2, DANGER if equiv else INK)):
         x1, x2 = xs[a] + ws[a] + 1, xs[b] - 1
         d.add(Line(x1, H - cy, x2, H - cy, strokeColor=color,
-                   strokeWidth=1.2))
+                   strokeWidth=1.2,
+                   strokeDashArray=[4, 3] if (a == 0 and first_edge_label) else None))
+        if a == 0 and first_edge_label:
+            d.add(String((x1 + x2) / 2, H - ny + 4, first_edge_label,
+                         fontName="Helvetica", fontSize=7, fillColor=INK,
+                         textAnchor="middle"))
         heads = [(x2, 1)]
         if equiv and b == 2:
             heads.append((x1, -1))
@@ -296,7 +443,7 @@ def _graph_drawing(key_label, det_label, dep_label, kind, equiv):
                        strokeColor=color, strokeWidth=1.2))
             d.add(Line(xe, H - cy, xe - direction * 5, H - cy - 2.5,
                        strokeColor=color, strokeWidth=1.2))
-    if kind == "transitive" and not equiv:
+    if kind in ("transitive", "partial") and not equiv:
         kx, dx = xs[0] + ws[0] / 2, xs[2] + ws[2] / 2
         y0 = H - ny - nh - 3
         n, ctrl = 24, y0 - 46
@@ -310,7 +457,7 @@ def _graph_drawing(key_label, det_label, dep_label, kind, equiv):
                            strokeWidth=1.2, strokeDashArray=[4, 3]))
             prev = (x, y)
         mid_y = 0.25 * y0 + 0.5 * ctrl + 0.25 * y0
-        d.add(String((kx + dx) / 2, mid_y - 12, "transitive",
+        d.add(String((kx + dx) / 2, mid_y - 12, "partial dependency" if kind == "partial" else "transitive",
                      fontName="Helvetica", fontSize=8, fillColor=DANGER,
                      textAnchor="middle"))
         d.add(Line(dx, y0, dx - 5, y0 + 2.5, strokeColor=DANGER,
@@ -393,13 +540,19 @@ def build_pdf(result: dict, compress: bool = True) -> bytes:
 
     story += [Paragraph("Summary", s["h2"])]
     faulted = counts.get("faulted", 0)
+    bcnf_faulted = counts.get("bcnf_faulted", 0)
     suspected = counts.get("suspected", 0)
+    bcnf_suspected = counts.get("bcnf_suspected", 0)
+    incomplete = counts.get("incomplete", 0)
     below = faulted + suspected
-    story += [_indented(Paragraph(
-        "%d of %d tables %s below 3NF (%d faulted, %d possibly below). %s %s clean." % (
-            below, selected, _plural(below, "is", "are"), faulted, suspected,
-            counts.get("clean", 0), _plural(counts.get("clean", 0), "is", "are")),
-        s["headline"]))]
+    headline_parts = [
+        "%d of %d tables %s below 3NF (%d faulted, %d suspected)" % (
+            below, selected, _plural(below, "is", "are"), faulted, suspected)]
+    if incomplete:
+        headline_parts.append("%d incomplete analysis%s" % (incomplete, "es" if incomplete != 1 else ""))
+    passed = counts.get("clean", 0) + bcnf_faulted + bcnf_suspected
+    headline_parts.append("%d clean" % passed)
+    story += [_indented(Paragraph("; ".join(headline_parts) + ".", s["headline"]))]
     extra = []
     if counts.get("insufficient_data"):
         n = counts["insufficient_data"]
@@ -412,9 +565,14 @@ def build_pdf(result: dict, compress: bool = True) -> bytes:
             "table could not" if problems == 1 else "tables could not"))
     if extra:
         story += [_indented(Paragraph("; ".join(extra) + ".", s["body"]))]
-    tables = result.get("tables") or []
+    # PDF scope: a table that reaches 3NF but violates BCNF is considered a
+    # pass for this report, because the report's headline is tables below 3NF.
+    # Keep BCNF-only results available to the API/UI, but do not list them as
+    # findings in the final PDF.
+    tables = [t for t in (result.get("tables") or [])
+              if t.get("status") not in ("bcnf_faulted", "bcnf_suspected")]
     order = {n: i for i, n in enumerate(scan.get("selected_tables") or [])}
-    rank = {"faulted": 0, "suspected": 1, "insufficient_data": 2}
+    rank = {"faulted": 0, "suspected": 1, "incomplete": 2, "insufficient_data": 3}
     tables = sorted(tables, key=lambda t: (rank.get(t.get("status"), 9),
                                            order.get(t.get("name"), 10 ** 9),
                                            t.get("name") or ""))
@@ -457,25 +615,53 @@ def build_pdf(result: dict, compress: bool = True) -> bytes:
                 "This table has too few rows to judge, so no findings are shown.",
                 s["body"]))]
             continue
-        nf = ("possibly " if status == "suspected" else "") + (t.get("normal_form") or "?")
-        amber = status == "suspected"
+        nf = t.get("current_normal_form") or t.get("normal_form") or "?"
+        violated = t.get("violated_normal_form")
+        amber = status in ("suspected", "bcnf_suspected")
+        danger = status in ("faulted", "bcnf_faulted", "incomplete")
+        badge = "%s" % nf
+        if violated:
+            badge += " · violates " + str(violated)
+        elif status == "incomplete":
+            badge += " · not confirmed"
         story += [_indented(_title_bar(
-            t.get("name"), "%s · %s" % (nf, status),
-            WARNING_SOFT if amber else DANGER_SOFT,
-            WARNING if amber else DANGER, s))]
+            t.get("name"), badge,
+            WARNING_SOFT if amber else (DANGER_SOFT if danger else GREY_FILL),
+            WARNING if amber else (DANGER if danger else MUTED), s))]
         keys = _key_columns(t)
         story += [_indented(Paragraph("%s rows · %d columns" % (
             _fmt_int(t.get("row_count")), len(t.get("columns") or [])),
             s["muted"]))]
+        story += [_indented(Paragraph(
+            "<b>Current normal form:</b> %s" % _esc(t.get("current_normal_form") or t.get("normal_form") or "unknown"),
+            s["body"]))]
+        if t.get("violated_normal_form"):
+            story += [_indented(Paragraph(
+                "<b>Violated normal form:</b> %s" % _esc(t.get("violated_normal_form")), s["body"]))]
+        for limitation in t.get("analysis_limitations") or []:
+            story += [_indented(Paragraph("<b>Analysis limitation:</b> %s" % _esc(limitation), s["muted"]))]
         if keys:
             story += [_indented(_chips_row(["Key:"] + keys, s, chip_from=1))]
             if t.get("key_confidence"):
                 story += [_indented(Paragraph("Key confidence: %s." % t["key_confidence"],
                                     s["muted"]))]
+            sources = {k.get("source") for k in t.get("keys") or [] if k.get("source")}
+            if "declared" in sources:
+                key_source = "schema-declared"
+            elif "inferred_verified" in sources:
+                key_source = "data-inferred (full-table verified)"
+            elif "inferred_sample" in sources:
+                key_source = "data-inferred (sample)"
+            elif "inferred" in sources:
+                key_source = "data-inferred"
+            else:
+                key_source = None
+            if key_source:
+                story += [_indented(Paragraph("Key source: %s." % _esc(key_source), s["muted"]))]
         else:
             story += [_indented(Paragraph("No key declared or found.", s["muted"]))]
         if t.get("sampled"):
-            story += [_indented(Paragraph("sampled (first 50,000 rows).", s["muted"]))]
+            story += [_indented(Paragraph("sampled for discovery; exact candidates were validated on the full table where possible.", s["muted"]))]
         story.append(Spacer(1, 2 * mm))
         for v in t.get("violations") or []:
             story += [_indented(_band(_strip_title(v), v.get("reason") or "",
@@ -486,11 +672,10 @@ def build_pdf(result: dict, compress: bool = True) -> bytes:
         pfd = _primary_fd(t, worst)
         if worst and worst.get("kind") in ("transitive", "partial"):
             equiv = bool(worst.get("equivalent") or (pfd and pfd.get("equivalent")))
+            graph = _graph_context(t, worst)
             story += [_indented(_graph_drawing(
-                ", ".join(keys or ["?"]),
-                ", ".join(worst.get("determinant") or ["?"]),
-                ", ".join(worst.get("dependents") or ["?"]),
-                worst.get("kind"), equiv))]
+                graph["first"], graph["middle"], graph["last"],
+                worst.get("kind"), equiv, graph.get("first_edge_label"), graph.get("compact", False)))]
             story.append(Spacer(1, 2 * mm))
             if equiv:
                 story += [_indented(Paragraph("Double-headed arrow: equivalent columns.",
@@ -503,8 +688,8 @@ def build_pdf(result: dict, compress: bool = True) -> bytes:
                             _esc(t.get("name"))), s["body"]))]
                     story += [_indented(tbl)]
                     story.append(Spacer(1, 2 * mm))
-        elif worst and worst.get("kind") in ("delimited", "repeating", "no-key"):
-            if worst.get("kind") == "no-key":
+        elif worst and worst.get("kind") in ("delimited", "repeating", "no-key", "unknown-key"):
+            if worst.get("kind") in ("no-key", "unknown-key"):
                 story += [_indented(Paragraph("Columns: %s" % ", ".join(
                     c.get("name", "") for c in t.get("columns") or []), s["body"]))]
             else:
@@ -513,32 +698,60 @@ def build_pdf(result: dict, compress: bool = True) -> bytes:
                 story += [_indented(Paragraph("e.g. <font face=\"Courier\">%s</font>" % (
                     _esc(worst["sample"])), s["body"]))]
             story.append(Spacer(1, 2 * mm))
-        for f in t.get("fds") or []:
-            story += [_indented(_evidence_grid(f, s))]
-            story.append(Spacer(1, 2 * mm))
+        fs = t.get("fd_summary") or {}
+        if fs:
+            story += [_indented(Paragraph(
+                "FD evidence: %s strong · %s material suspected · %s weak observations suppressed." % (
+                    fs.get("strong", 0), fs.get("suspected", 0), fs.get("weak_suppressed", 0)),
+                s["muted"]))]
+        # PDF presentation only: show the small set of major violation-linked
+        # FDs. The full FD collection remains available to the API/result card.
+        if worst and worst.get("kind") in ("partial", "transitive", "bcnf"):
+            major_fds = _major_violation_fds(t, worst.get("kind"))
+            for i, f in enumerate(major_fds, 1):
+                story += [_indented(Paragraph(
+                    "<b>Functional Dependency %d</b>" % i, s["h3"]))]
+                story += [_indented(_evidence_grid(f, s))]
+                story.append(Spacer(1, 2 * mm))
         if t.get("recommendation"):
             story += [_indented(_band("Recommendation.", t["recommendation"],
                              ACCENT_SOFT, ACCENT, s))]
             story.append(Spacer(1, 2 * mm))
             if worst and worst.get("kind") in ("transitive", "partial"):
-                det = worst.get("determinant") or []
-                deps = worst.get("dependents") or []
-                rest = [c.get("name", "") for c in t.get("columns") or []
-                        if c.get("name") not in keys and c.get("name") not in det
-                        and c.get("name") not in deps]
-                orig = [(n, "PK") for n in keys] + [(n, "link") for n in det] + [
-                    (n, "") for n in rest[:8]]
-                if len(rest) > 8:
-                    orig.append(("+ %d more" % (len(rest) - 8), ""))
-                new_title = ("new lookup table (keyed by %s)" if equiv
-                             else "new table (keyed by %s)") % ", ".join(det)
-                new = [(n, "key") for n in det] + [(n, "") for n in deps]
-                pair = Table([[_sugg_table(t.get("name"), orig, s),
-                               _sugg_table(new_title, new, s)]],
-                             colWidths=[86 * mm, 86 * mm], spaceBefore=2 * mm)
-                pair.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
-                story += [_indented(pair)]
-                story += [_indented(Paragraph("Illustrative sketch — not runnable DDL.",
-                                    s["muted"]))]
+                groups = []
+                seen = {}
+                for v in t.get("violations") or []:
+                    if v.get("kind") != worst.get("kind"):
+                        continue
+                    det_key = tuple(v.get("determinant") or [])
+                    if det_key not in seen:
+                        seen[det_key] = {"det": list(det_key), "deps": []}
+                        groups.append(seen[det_key])
+                    for dep in v.get("dependents") or []:
+                        if dep not in seen[det_key]["deps"]:
+                            seen[det_key]["deps"].append(dep)
+                # Recommendation decomposition is an illustrative sketch, not a
+                # complete rendering of every violation group. Show one canonical
+                # sketch only; the recommendation text above already summarizes
+                # all groups. This also prevents alternate/contradictory sketches
+                # from appearing later in the report when multiple determinants
+                # are involved.
+                for group in groups[:1]:
+                    det = group["det"]
+                    deps = group["deps"]
+                    rest = [c.get("name", "") for c in t.get("columns") or []
+                            if c.get("name") not in keys and c.get("name") not in det
+                            and c.get("name") not in deps]
+                    orig = [(n, "PK") for n in keys] + [(n, "link") for n in det] + [(n, "") for n in rest[:8]]
+                    if len(rest) > 8:
+                        orig.append(("+ %d more" % (len(rest) - 8), ""))
+                    new_title = "new table (keyed by %s)" % ", ".join(det)
+                    new = [(n, "key") for n in det] + [(n, "") for n in deps]
+                    pair = Table([[_sugg_table(t.get("name"), orig, s),
+                                   _sugg_table(new_title, new, s)]],
+                                 colWidths=[86 * mm, 86 * mm], spaceBefore=2 * mm)
+                    pair.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
+                    story += [_indented(pair)]
+                story += [_indented(Paragraph("Illustrative sketch — not runnable DDL.", s["muted"]))]
     doc.build(story)
     return buf.getvalue()

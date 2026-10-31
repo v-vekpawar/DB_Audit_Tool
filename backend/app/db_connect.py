@@ -1,7 +1,6 @@
 """Database connections: URL building, SSL, read-only, version, guard.
 
-Supports MySQL and PostgreSQL now; Oracle URL building is included as a
-pure function (untested against a server until build step 13).
+Supports MySQL, PostgreSQL, Oracle, and Microsoft SQL Server (MSSQL).
 """
 
 import argparse
@@ -18,24 +17,30 @@ from .errors import make_error
 from .logging_setup import StepTimer, get_logger, set_secrets
 
 READONLY_SQL = {
+    "mssql": "SELECT 1",
+    "mssql": "SELECT 1",
     "mysql": "SET SESSION TRANSACTION READ ONLY",
     "postgresql": "SET default_transaction_read_only = on",
     "oracle": "SET TRANSACTION READ ONLY",
 }
 
 READONLY_CHECK_SQL = {
+    "mssql": "SELECT 1",
+    "mssql": "SELECT 1",
     "mysql": "SELECT @@transaction_read_only",
     "postgresql": "SHOW transaction_read_only",
     "oracle": None,  # verified in step 13 against a live server
 }
 
 VERSION_SQL = {
+    "mssql": "SELECT @@VERSION",
+    "mssql": "SELECT @@VERSION",
     "mysql": "SELECT VERSION()",
     "postgresql": "SELECT version()",
     "oracle": "SELECT banner FROM v$version WHERE ROWNUM = 1",
 }
 
-ENGINE_DISPLAY = {"mysql": "MySQL", "postgresql": "PostgreSQL", "oracle": "Oracle"}
+ENGINE_DISPLAY = {"mysql": "MySQL", "postgresql": "PostgreSQL", "oracle": "Oracle", "mssql": "Microsoft SQL Server"}
 
 
 @dataclass
@@ -48,13 +53,18 @@ class ConnectParams:
     database: str = ""  # Oracle: unused (service_name + schema instead)
     schema: str | None = None  # postgresql schema / oracle owner
     service_name: str | None = None  # oracle only
+    driver: str | None = None  # mssql ODBC driver
     ssl: bool = False
 
 
 def normalize_db_type(db_type: str) -> str:
     t = (db_type or "").strip().lower()
-    if t in ("mysql", "postgresql", "postgres", "oracle"):
-        return "postgresql" if t == "postgres" else t
+    if t in ("mysql", "postgresql", "postgres", "oracle", "mssql", "sqlserver", "sql_server"):
+        if t == "postgres":
+            return "postgresql"
+        if t in ("sqlserver", "sql_server"):
+            return "mssql"
+        return t
     raise ValueError("unsupported db_type: %r" % (db_type,))
 
 
@@ -80,6 +90,14 @@ def build_url(p: ConnectParams, require_db: bool = True) -> str:
         if require_db and not db:
             raise ValueError("database is required for PostgreSQL")
         return "postgresql+pg8000://%s%s:%d%s" % (auth, host, port, "/" + db if db else "")
+    if t == "mssql":
+        db = p.database or ("master" if not require_db else "")
+        if require_db and not db:
+            raise ValueError("database is required for MSSQL")
+        driver = p.driver or "ODBC Driver 18 for SQL Server"
+        params = "driver=%s&ApplicationIntent=ReadOnly" % quote_plus(driver)
+        params += "&Encrypt=yes&TrustServerCertificate=yes" if p.ssl else "&Encrypt=no"
+        return "mssql+pyodbc://%s%s:%d/%s?%s" % (auth, host, port, quote_plus(db), params)
     if not p.service_name:
         raise ValueError("service_name is required for Oracle")
     return "oracle+oracledb://%s%s:%d/?service_name=%s" % (
@@ -102,6 +120,10 @@ def connect_args_for(p: ConnectParams) -> dict:
         if p.ssl:
             args["ssl"] = _unverified_context()
         return args
+    if t == "mssql":
+        return {"timeout": q}
+    if t == "mssql":
+        return {"timeout": q}
     if t == "postgresql":
         args = {"timeout": q}
         if p.ssl:

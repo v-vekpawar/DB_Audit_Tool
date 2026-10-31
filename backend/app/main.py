@@ -58,7 +58,7 @@ def _params_from(body: ConnectRequest | ScanStartRequest, op: str,
     except ValueError:
         raise ConnectError(make_error(
             "VALIDATION_ERROR", step=op, scan_id="-",
-            detail="db_type must be mysql, postgresql or oracle"))
+            detail="db_type must be mysql, postgresql, oracle or mssql"))
     host = (body.host or "").strip()
     if not host:
         raise ConnectError(make_error(
@@ -76,6 +76,7 @@ def _params_from(body: ConnectRequest | ScanStartRequest, op: str,
                            database=(body.database or "").strip(),
                            schema=(body.db_schema or "").strip() or None,
                            service_name=(body.service_name or "").strip() or None,
+                           driver=(body.driver or "").strip() or None,
                            ssl=bool(body.ssl))
     try:
         from .db_connect import build_url
@@ -99,6 +100,10 @@ def api_connect(body: ConnectRequest):
         params = _params_from(body, "connect", require_db=False)
         if params.db_type == "postgresql" and not params.database:
             params.database = "postgres"
+        if params.db_type == "mssql" and not params.database:
+            params.database = "master"
+        if params.db_type == "mssql" and not params.database:
+            params.database = "master"
     except ConnectError as e:
         e.error_obj["error"]["scan_id"] = scan_id
         from .errors import http_status

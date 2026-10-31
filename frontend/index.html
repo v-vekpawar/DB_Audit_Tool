@@ -10,7 +10,7 @@
 
 <header class="page-header">
   <h1>Database Normalization Checker</h1>
-  <p class="page-subtitle">Connects to one MySQL, PostgreSQL or Oracle database, checks the tables you tick, and reports every table below 3NF with evidence.</p>
+  <p class="page-subtitle">Connects to one MySQL, PostgreSQL, Oracle or Microsoft SQL Server database, checks the tables you tick, and reports every table below 3NF with evidence.</p>
 </header>
 
 <main class="container">
@@ -36,6 +36,7 @@
         <label class="radio-option"><input type="radio" name="db_type" value="mysql" checked><span>MySQL</span></label>
         <label class="radio-option"><input type="radio" name="db_type" value="postgresql"><span>PostgreSQL</span></label>
         <label class="radio-option"><input type="radio" name="db_type" value="oracle"><span>Oracle</span></label>
+        <label class="radio-option"><input type="radio" name="db_type" value="mssql"><span>Microsoft SQL Server</span></label>
       </div>
     </fieldset>
 
@@ -64,6 +65,12 @@
     </div>
     <p class="field-hint">Credentials are used for this run only and are never stored.</p>
 
+    <div class="field" id="field-driver" hidden>
+      <label for="odbc-driver">ODBC driver</label>
+      <input type="text" id="odbc-driver" class="mono" placeholder="ODBC Driver 18 for SQL Server" autocomplete="off">
+      <p class="field-hint">MSSQL only. Leave the default unless your machine uses another installed SQL Server ODBC driver.</p>
+    </div>
+
     <div class="field" id="field-service" hidden>
       <label for="service-name">Service name</label>
       <input type="text" id="service-name" class="mono" placeholder="FREEPDB1" autocomplete="off">
@@ -72,7 +79,7 @@
     </div>
 
     <div class="field" id="field-schema" hidden>
-      <label for="schema">Schema <span class="field-hint">(optional, defaults to public)</span></label>
+      <label for="schema">Schema <span class="field-hint">(optional)</span></label>
       <input type="text" id="schema" class="mono" placeholder="public" autocomplete="off">
     </div>
 

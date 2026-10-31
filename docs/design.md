@@ -122,7 +122,7 @@ One process, one port. The backend serves the frontend as static files.
 | `fd_scoring.py` | Coincidence probability, correction, near-FD handling, confidence and tier (pure function) |
 | `cross_table.py` | Cross-table evidence: compares a table's value pairs with the referenced table's |
 | `keys.py` | Candidate keys: declared (certain) and inferred (flagged) |
-| `normal_forms.py` | 1NF-BCNF classification, violations list |
+| `normal_forms.py` | 1NF-BCNF classification, explicit current/violated boundary, violations list |
 | `recommend.py` | One-sentence recommendation per violation |
 | `estimator.py` | Work estimate per table, total and remaining time estimate |
 | `analyzer.py` | Orchestrates the scan over the selected tables, per-table error isolation, progress events |
@@ -226,8 +226,8 @@ reported.
 8. Compute the confidence score and the tier (6.9).
 ### 6.3 Determinant size
  
-- Default `MAX_LHS_SIZE` = 2.
-- Tables with at least `LARGE_TABLE_ROWS` (1 000) rows use `MAX_LHS_SIZE_LARGE` = 3.
+- Default `MAX_LHS_SIZE` = 6 for TANE-style search.
+- Tables with at least `LARGE_TABLE_ROWS` (1 000) rows use `MAX_LHS_SIZE_LARGE` = 8; bounded searches explicitly report incomplete analysis.
   Wide determinants on small tables are almost unique, so they "determine"
   everything by luck and prove nothing.
 - **Key parts are always tested.** For a declared composite key, every proper
@@ -352,6 +352,13 @@ score = round(100 * e_adj / (e_adj + 2)),  at most 99
 Declared primary/unique keys score 100 ("declared in schema"). Sampled tables are
 capped at `SAMPLED_SCORE_CAP` (85); near-FDs at 90.
  
+**Dirty-data guard for normalization:** if an exact strong FD `Z -> Y` is a strict
+superset of a discovered near-FD `X -> Y`, the exact superset is treated as
+exception-driven evidence rather than a hard normal-form violation. A small
+number of dirty rows can otherwise make a larger determinant appear exact simply
+because it isolates the exception rows. The exact FD remains visible in the FD
+evidence list.
+
 **Tiers**
  
 | Tier | Rule | Effect |
@@ -419,16 +426,18 @@ README says so in one line.
  
 | Form | Violation | Condition |
 |---|---|---|
-| 1NF | No key | No declared key and no inferred key |
+| Key warning | No candidate key | No declared or data-inferred candidate key; higher normal forms cannot be confirmed |
 | 1NF | Multi-valued cell | A column where a large share of non-null values hold delimiter-separated lists (comma, semicolon, pipe), JSON arrays, or a native array type |
 | 1NF | Repeating group | Two or more columns named like `stem` + number (`phone1`, `phone2`, `phone3`) |
 | 2NF | Partial dependency | `X -> Y`, X a **proper subset** of a composite candidate key, Y non-prime |
 | 3NF | Transitive dependency | `X -> Y`, X not a superkey, X not a subset of a key (else it is 2NF), Y non-prime |
 | BCNF | Non-superkey determinant | `X -> Y`, X not a superkey (Y prime allowed) |
  
-Exact normal form of a table = highest form with no violation, evaluated using
-**strong** FDs only. Violations that exist only through suspected FDs set the
-table status to `suspected` and the card says "possibly <form>".
+Exact normal form of a table = highest form with no formal violation, evaluated using
+**strong** FDs only. Material suspected FDs are diagnostic evidence and do not
+lower the formal boundary. Weak observations are suppressed from the main FD
+list. Results expose both `current_normal_form` and `violated_normal_form`.
+An incomplete FD search is reported as `incomplete`, not as a below-3NF result.
  
 Equivalent columns (6.5) are treated as one attribute: if one is a superkey, so
 is the other; a violation through them is reported once.
@@ -438,8 +447,11 @@ is the other; a violation through them is reported once.
 | Status | Meaning | Shown |
 |---|---|---|
 | `faulted` | Below 3NF with strong evidence or schema-certain | Full card |
-| `suspected` | Below 3NF only through suspected FDs | Amber card |
-| `clean` | 3NF or BCNF (3NF-but-not-BCNF is clean, its exact form is recorded) | Counted only |
+| `suspected` | Below 3NF with data-derived key/evidence uncertainty | Amber card |
+| `bcnf_faulted` | BCNF violation only; current form is 3NF | Full card |
+| `bcnf_suspected` | BCNF-only concern with evidence uncertainty | Amber card |
+| `incomplete` | No formal lower-NF violation established, but BCNF cannot be confirmed | Amber card |
+| `clean` | BCNF confirmed | Counted only |
 | `insufficient_data` | Too few rows to judge and no schema-certain violation | Counted only |
 | `error` | Could not be analysed (permissions, timeout, table dropped) | Listed in a small notice |
 | `not_run` | Ticked, but the scan was stopped before it was reached | Listed, counted separately |
@@ -456,7 +468,7 @@ One plain sentence from a template, for example:
 - Equivalent: `country_code and country_name are equivalent columns; keep one as the key of a lookup table.`
 - 1NF delimited: `Store each value of tags in its own row of a child table instead of a comma-separated list.`
 - 1NF repeating: `Replace phone1, phone2, phone3 with a child table holding one phone per row.`
-- 1NF no key: `Add a primary key to this table.`
+- Key unavailable: `Define a declared candidate key before relying on 2NF/3NF/BCNF results.`
 No DDL is generated.
  
 ---

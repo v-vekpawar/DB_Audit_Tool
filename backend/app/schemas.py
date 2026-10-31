@@ -14,6 +14,7 @@ class ConnectRequest(BaseModel):
     database: str = ""
     db_schema: str | None = Field(default=None, alias="schema")
     service_name: str | None = None
+    driver: str | None = None
     ssl: bool = False
 
 

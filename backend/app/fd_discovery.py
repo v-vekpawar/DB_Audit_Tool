@@ -41,6 +41,8 @@ class DiscoverResult:
     m: int  # candidate (determinant, dependent) pairs for the correction
     tests: int = 0
     pruned: int = 0
+    algorithm: str = "tane"
+    complete: bool = True
 
 
 def _null_masks(coded, columns, n):
@@ -129,233 +131,179 @@ def _check_groups(groups: dict, dep_vals, n, max_error):
 
 
 class _Searcher:
+    """Correct level-wise partition FD search.
+
+    This is deliberately close to the ideas used by TANE: candidates are
+    processed by determinant size, partitions are refined by adding one
+    attribute, and known minimal determinants/superkeys prune supersets.
+    """
     def __init__(self, coded, columns, n, declared_keys, limit):
         self.coded = coded
-        self.columns = columns
+        self.columns = sorted(columns)
         self.n = n
         self.limit = limit
         self.masks = _null_masks(coded, columns, n)
-        self.distinct = {}
-        self.live = []  # searchable, non-constant columns
-        for c in columns:
-            vals = coded[c]
-            nn = [v for v in vals if v is not None]
-            d = len(set(nn))
-            self.distinct[c] = d
-            null_ratio = (n - len(nn)) / n if n else 1.0
-            if d > 1 and null_ratio <= _MOSTLY_NULL:
-                self.live.append(c)
-        self.single_keys = set()
-        for k in declared_keys or []:
-            if len(k) == 1:
-                self.single_keys.update(k)
-        self.minimal = {}  # dep -> [set(det)]
-        self.fds: list = []
+        self.distinct = {c: len({v for v in coded[c] if v is not None}) for c in columns}
+        # Determinants need more than one observed value to be useful as a
+        # minimal determinant, but dependent attributes must include constant
+        # columns: a non-key determinant can legitimately determine a constant
+        # attribute.  Pruning constant dependents was causing TANE to miss
+        # valid FDs (especially in NULL/fixture datasets).
+        self.live = [c for c in self.columns
+                     if self.distinct[c] > 1 and
+                     ((sum(v is None for v in coded[c])) / n if n else 1.0) <= _MOSTLY_NULL]
+        self.dependents = [c for c in self.columns
+                           if ((sum(v is None for v in coded[c])) / n if n else 1.0) <= _MOSTLY_NULL]
+        self.single_keys = {k[0] for k in (declared_keys or []) if len(k) == 1}
+        self.minimal = {}
+        self.fds = []
         self.tests = 0
         self.pruned = 0
         self.unique_sets = set()
-        self.parts: dict = {}  # frozenset -> Partition (previous level)
+        self.parts = {}
 
     def _dominated(self, det, dep):
-        for known in self.minimal.get(dep, ()):
-            if known <= set(det):
-                return True
-        return False
+        s = set(det)
+        return any(k <= s for k in self.minimal.get(dep, ()))
 
-    def _try(self, det, dep):
-        """Test det -> dep. det: list of names. Returns True if recorded."""
+    def _partition(self, attrs):
+        """Build/refine a complete equivalence partition for attrs."""
+        key = frozenset(attrs)
+        if key in self.parts:
+            return self.parts[key]
+        attrs = tuple(sorted(attrs))
+        if len(attrs) == 1:
+            part, _ = _partition_single_full(self.coded[attrs[0]], self.n)
+        else:
+            parent_attrs = attrs[:-1]
+            parent = self._partition(parent_attrs)
+            groups = _refine_full(parent.groups, self.coded[attrs[-1]])
+            examined = _examined(self.masks, attrs, self.n)
+            part = Partition(groups, examined)
+        self.parts[key] = part
+        if part.groups and all(len(g) == 1 for g in part.groups.values()):
+            # Every comparable row is unique for this determinant.
+            self.unique_sets.add(key)
+        return part
+
+    def _try(self, det, dep, part=None):
         if dep in det or self._dominated(det, dep):
             self.pruned += 1
             return False
         if any(c in self.single_keys for c in det):
             self.pruned += 1
             return False
-        if self.distinct.get(dep, 0) <= 1:
+        part = part or self._partition(det)
+        if not part.groups:
             self.pruned += 1
             return False
-        key = frozenset(det)
-        part = self.parts.get(key)
-        if part is None:
-            groups = self._direct_groups(det)
-            examined = _examined(self.masks, det, self.n)
-            if not groups:
-                if examined:
-                    self.unique_sets.add(key)
-                return False
-        else:
-            groups = part.groups
-            examined = part.examined
-            if not groups:
-                return False
-        # cheap prefilter: Y cannot have more distinct values than X.
-        # Near-FDs get slack: each of the at most max_error*n exception
-        # rows can introduce one new Y value (a dirty value inflates Y's
-        # distinct count, so the strict form would prune real near-FDs).
-        if self.distinct[dep] > len(groups) + (examined - sum(len(g) for g in groups.values())) + int(config.NEAR_FD_MAX_ERROR * self.n):
+        # A superkey determinant is not a useful minimal FD determinant.
+        if all(len(g) == 1 for g in part.groups.values()):
             self.pruned += 1
             return False
         self.tests += 1
-        status, info = _check_groups(groups, self.coded[dep], self.n,
+        status, info = _check_groups(part.groups, self.coded[dep], self.n,
                                      config.NEAR_FD_MAX_ERROR)
         if status == "fail":
             return False
-        det_names = list(det)
+        det_names = list(sorted(det))
+        # Only an exact FD may establish minimality for pruning.  A near-FD
+        # is an approximate observation and must never suppress a larger
+        # determinant that may hold exactly.
         if status == "holds":
             self.minimal.setdefault(dep, []).append(set(det_names))
             self.fds.append(FoundFD(det_names, dep, "exact",
                                     group_sizes=info["group_sizes"],
-                                    examined=examined))
-            return True
-        # near
-        self.minimal.setdefault(dep, []).append(set(det_names))
-        self.fds.append(FoundFD(det_names, dep, "near", k=info["k"],
-                                exception_rows=info["exception_rows"],
-                                group_sizes=info["group_sizes"],
-                                examined=examined))
+                                    examined=part.examined))
+        else:
+            self.fds.append(FoundFD(det_names, dep, "near", k=info["k"],
+                                    exception_rows=info["exception_rows"],
+                                    group_sizes=info["group_sizes"],
+                                    examined=part.examined))
         return True
 
-    def _direct_groups(self, det):
-        cols = [self.coded[c] for c in det]
-        groups: dict = {}
-        for j in range(self.n):
-            key = []
-            for col in cols:
-                v = col[j]
-                if v is None:
-                    break
-                key.append(v)
-            else:
-                t = tuple(key)
-                g = groups.get(t)
-                if g is None:
-                    groups[t] = [j]
-                else:
-                    g.append(j)
-                continue
-        return {k: g for k, g in groups.items() if len(g) > 1}
-
-    def _level_partitions(self, level_sets):
-        parts = {}
-        for s in level_sets:
-            s = tuple(sorted(s))
-            if len(s) == 1:
-                part, _ = _partition_single(self.coded[s[0]], self.n)
-            else:
-                parent = parts_parent(self.parts, s)
-                if parent is None:
-                    continue
-                groups = _refine(parent, self.coded[s[-1]])
-                examined = _examined(self.masks, s, self.n)
-                part = Partition(groups, examined)
-            if not part.groups:
-                if part.examined:
-                    self.unique_sets.add(frozenset(s))
-                continue
-            parts[frozenset(s)] = part
-        self.parts = parts
-        return parts
-
     def run_levels(self):
-        cols = sorted(self.live)
-        # level 1
-        self._level_partitions([(c,) for c in cols])
-        prev = [frozenset((c,)) for c in cols if frozenset((c,)) in self.parts]
-        prev_tuples = [tuple(sorted(s)) for s in prev]
-        size = 2
-        while size <= self.limit + 1:
-            cands = _join(prev_tuples)
-            cands = [c for c in cands if not any(u <= set(c) for u in self.unique_sets)]
-            if not cands:
-                break
-            # The last level's partitions would never be reused as parents,
-            # so its candidates are tested by direct grouping instead.
-            last = (size == self.limit + 1)
-            if not last:
-                self._level_partitions(cands)
-            # RHS tests: for set X, for A in X: (X - A) -> A.
-            # Grouped by determinant so each group-by runs once.
-            if last:
-                by_det: dict = {}
-                for x in cands:
-                    if len(x) - 1 > self.limit or len(x) - 1 < 1:
-                        continue
-                    for a in x:
-                        if a not in self.live:
-                            continue
-                        det = tuple(sorted(c for c in x if c != a))
-                        if not all(d in self.live for d in det):
-                            continue
-                        by_det.setdefault(det, []).append(a)
-                for det, deps in by_det.items():
-                    self._try_direct_grouped(list(det), deps)
-            else:
-                for x in cands:
-                    if frozenset(x) not in self.parts:
-                        continue
-                    if len(x) - 1 > self.limit or len(x) - 1 < 1:
-                        continue
-                    for a in x:
-                        if a not in self.live:
-                            continue
-                        det = [c for c in x if c != a]
-                        if all(d in self.live for d in det):
-                            self._try(det, a)
-            prev_tuples = [tuple(sorted(s)) for s in self.parts]
+        cols = self.live
+        if not cols:
+            return
+        # Level-wise candidate determinants. We retain all non-unique
+        # partitions; unique determinants prune every superset.
+        prev = [tuple([c]) for c in cols]
+        self._level_partitions(prev)
+        size = 1
+        while prev and size <= self.limit:
+            if size > 1:
+                prev = self._generate_level(prev, size)
+                if not prev:
+                    break
+                self._level_partitions(prev)
+            for det in prev:
+                part = self.parts.get(frozenset(det))
+                if part is None or not part.groups:
+                    continue
+                if all(len(g) == 1 for g in part.groups.values()):
+                    continue
+                for dep in self.dependents:
+                    self._try(det, dep, part)
             size += 1
 
+    def _generate_level(self, prev, size):
+        prev_sets = {frozenset(x) for x in prev}
+        out = []
+        for combo in combinations(self.live, size):
+            s = frozenset(combo)
+            if any(u <= s for u in self.unique_sets):
+                self.pruned += 1
+                continue
+            # Apriori/TANE candidate rule: all immediate subsets should have
+            # survived the previous level. If a subset is a superkey or a
+            # missing partition, the candidate cannot produce a new minimal FD.
+            if not all(frozenset(x) in prev_sets for x in combinations(combo, size - 1)):
+                self.pruned += 1
+                continue
+            out.append(combo)
+        return out
+
+    def _level_partitions(self, level_sets):
+        for s in level_sets:
+            self._partition(s)
+
     def run_key_parts(self, declared_keys):
+        # Composite declared keys are especially important for 2NF: test every
+        # proper subset even when the general search was pruned by a key column.
         for key in declared_keys or []:
             if len(key) < 2:
                 continue
-            subs = []
             for r in range(1, len(key)):
-                subs.extend(combinations(key, r))
-            for s in subs:
-                det = list(s)
-                if not all(d in self.live for d in det):
-                    # key parts outside the search space are still tested,
-                    # but need direct grouping (no partition objects)
-                    pass
-                for dep in self.columns:
-                    if dep in det or self.distinct.get(dep, 0) <= 1:
-                        continue
-                    self._try_direct(det, dep)
+                for det in combinations(key, r):
+                    part = self._partition(det)
+                    for dep in self.columns:
+                        self._try(det, dep, part)
 
-    def _try_direct(self, det, dep):
-        return self._try_direct_grouped(det, [dep])
 
-    def _try_direct_grouped(self, det, deps):
-        groups = self._direct_groups(det)
-        examined = _examined(self.masks, det, self.n)
-        if not groups:
-            if examined:
-                self.unique_sets.add(frozenset(det))
-            return False
-        self.tests += len(deps)
-        found_any = False
-        for dep in deps:
-            if dep in det or self._dominated(det, dep):
-                self.pruned += 1
+def _partition_single_full(col_vals, n):
+    groups = {}
+    examined = 0
+    for j, v in enumerate(col_vals):
+        if v is None:
+            continue
+        examined += 1
+        groups.setdefault(v, []).append(j)
+    return Partition(groups, examined), len(groups)
+
+
+def _refine_full(parent_groups, col_vals):
+    groups = {}
+    for rows in parent_groups.values():
+        sub = {}
+        for r in rows:
+            v = col_vals[r]
+            if v is None:
                 continue
-            if any(c in self.single_keys for c in det):
-                self.pruned += 1
-                continue
-            status, info = _check_groups(groups, self.coded[dep], self.n,
-                                         config.NEAR_FD_MAX_ERROR)
-            if status == "fail":
-                continue
-            self.minimal.setdefault(dep, []).append(set(det))
-            if status == "holds":
-                self.fds.append(FoundFD(list(det), dep, "exact",
-                                        group_sizes=info["group_sizes"],
-                                        examined=examined))
-            else:
-                self.fds.append(FoundFD(list(det), dep, "near", k=info["k"],
-                                        exception_rows=info["exception_rows"],
-                                        group_sizes=info["group_sizes"],
-                                        examined=examined))
-            found_any = True
-        return found_any
+            sub.setdefault(v, []).append(r)
+        for v, g in sub.items():
+            groups[tuple(g)] = g
+    return groups
 
 
 def parts_parent(parts: dict, s):
@@ -392,16 +340,138 @@ def count_candidates(n_cols, limit, declared_keys=None):
     return m
 
 
-def discover(coded, columns, n_rows, declared_keys=None, limit=None) -> DiscoverResult:
+def _fd_holds_exact(coded, det, dep, n):
+    """Exact FD test with the project's NULL policy: NULL in X excludes the row;
+    NULL in Y is an ordinary value and therefore can disagree with a non-NULL.
+    """
+    groups = {}
+    cols = [coded[c] for c in det]
+    y = coded[dep]
+    examined = 0
+    for r in range(n):
+        vals = []
+        valid = True
+        for col in cols:
+            v = col[r]
+            if v is None:
+                valid = False
+                break
+            vals.append(v)
+        if not valid:
+            continue
+        examined += 1
+        groups.setdefault(tuple(vals), set()).add(y[r])
+        if len(groups[tuple(vals)]) > 1:
+            return False
+    return examined > 0
+
+
+def _is_unique_values(coded, cols, n):
+    """Whether X is a superkey under the FD NULL policy.
+
+    NULL in a determinant excludes that row from FD validation, so uniqueness
+    for FD-discovery pruning is checked only over rows where every determinant
+    attribute is non-NULL.  This is deliberately different from candidate-key
+    inference, where NULL-containing keys are never accepted.
+    """
+    if not cols or n <= 0:
+        return False
+    seen = set()
+    examined = 0
+    for r in range(n):
+        t = tuple(coded[c][r] for c in cols)
+        if any(v is None for v in t):
+            continue
+        examined += 1
+        if t in seen:
+            return False
+        seen.add(t)
+    return examined > 0
+
+
+def brute_force_discover(coded, columns, n_rows, declared_keys=None) -> DiscoverResult:
+    """Reference FD discovery: enumerate determinants by size and test exactly.
+
+    It intentionally favors clarity over speed. It reports minimal exact FDs only;
+    schema-declared key determinants are skipped because they are already guaranteed
+    to determine every column and are not useful minimal non-key dependencies.
+    """
+    cols_all = sorted(columns)
+    cols = [c for c in cols_all
+            if n_rows and (sum(v is None for v in coded[c]) / n_rows) <= _MOSTLY_NULL]
+    # With fewer than two rows there is no repeated determinant group from
+    # which a data-observed FD can be established. Treat the relation as
+    # insufficient evidence rather than reporting vacuous FDs.
+    if n_rows < 2:
+        m = sum(len(list(combinations(cols, k))) * (len(cols) - k)
+                for k in range(1, len(cols)))
+        return DiscoverResult(fds=[], m=m, tests=0, pruned=0,
+                              algorithm="bruteforce", complete=True)
+    fds = []
+    minimal = {}
+    tests = 0
+    pruned = 0
+    declared_single = {k[0] for k in (declared_keys or []) if len(k) == 1}
+
+    for size in range(1, len(cols) + 1):
+        for det_t in combinations(cols, size):
+            det = set(det_t)
+            # A declared single-column key already determines everything.
+            if any(c in declared_single for c in det):
+                pruned += max(0, len(cols) - size)
+                continue
+            # A unique determinant is a superkey; it determines every other
+            # attribute but is not a useful minimal non-key FD.
+            if _is_unique_values(coded, det_t, n_rows):
+                pruned += len(cols) - size
+                continue
+            for dep in cols:
+                if dep in det:
+                    continue
+                known = minimal.get(dep, [])
+                if any(k <= det for k in known):
+                    pruned += 1
+                    continue
+                tests += 1
+                if _fd_holds_exact(coded, det_t, dep, n_rows):
+                    minimal.setdefault(dep, []).append(det)
+                    fds.append(FoundFD(list(det_t), dep, "exact",
+                                       group_sizes=[], examined=n_rows))
+    _mark_equivalent(fds)
+    m = sum(len(list(combinations(cols, k))) * (len(cols) - k)
+            for k in range(1, len(cols)))
+    return DiscoverResult(fds=fds, m=m, tests=tests, pruned=pruned,
+                          algorithm="bruteforce", complete=True)
+
+
+def discover(coded, columns, n_rows, declared_keys=None, limit=None,
+             algorithm="auto") -> DiscoverResult:
+    """Discover minimal FDs. Small schemas use the exact reference search;
+    larger schemas use the partition-based TANE-style search with an explicit
+    completeness flag when determinant-size limits prevent exhaustive search.
+    """
+    ncols = len(columns)
+    if n_rows < 2:
+        m = sum(len(list(combinations(sorted(columns), k))) * (ncols - k)
+                for k in range(1, ncols))
+        return DiscoverResult(fds=[], m=m, tests=0, pruned=0,
+                              algorithm=("bruteforce" if algorithm == "bruteforce" else "tane"),
+                              complete=True)
+    if algorithm == "bruteforce" or (algorithm == "auto" and
+                                      config.RUN_BRUTE_FORCE_PARITY and
+                                      ncols <= config.BRUTE_FORCE_MAX_COLUMNS):
+        return brute_force_discover(coded, columns, n_rows, declared_keys)
     if limit is None:
         limit = (config.MAX_LHS_SIZE_LARGE if n_rows >= config.LARGE_TABLE_ROWS
                  else config.MAX_LHS_SIZE)
+    limit = min(limit, max(1, ncols - 1))
     s = _Searcher(coded, list(columns), n_rows, declared_keys, limit)
     s.run_levels()
     s.run_key_parts(declared_keys)
     _mark_equivalent(s.fds)
     m = count_candidates(len(columns), limit, declared_keys)
-    return DiscoverResult(fds=s.fds, m=m, tests=s.tests, pruned=s.pruned)
+    return DiscoverResult(fds=s.fds, m=m, tests=s.tests, pruned=s.pruned,
+                          algorithm="tane", complete=(limit >= max(1, ncols - 1)))
 
 
 def _mark_equivalent(fds):

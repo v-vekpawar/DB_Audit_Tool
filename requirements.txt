@@ -11,3 +11,6 @@ pymysql==1.2.3
 cryptography==50.0.2
 pg8000==1.31.5
 oracledb==26.0.1
+
+# MSSQL driver (also requires a Microsoft SQL Server ODBC driver installed on the host).
+pyodbc==5.2.0

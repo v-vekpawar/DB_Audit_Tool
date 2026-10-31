@@ -65,7 +65,7 @@ speed), and one table above `MAX_ROWS_PER_TABLE` (sampling). All data is synthet
  
 | Table | Planted defect | Expected status | Expected normal form |
 |---|---|---|---|
-| `t_1nf_nokey` | No primary key, duplicate rows possible | faulted | below 1NF |
+| `t_1nf_nokey` | No declared/inferred key; 1NF itself is not defined by key existence | suspected/incomplete | 1NF |
 | `t_1nf_delimited` | `tags` column holds comma-separated lists | faulted | below 1NF |
 | `t_1nf_repeating` | `phone1`, `phone2`, `phone3` | faulted | below 1NF |
 | `t_2nf_partial` | `order_items(order_id, product_id, qty, product_name)`; `product_name` depends on `product_id` only | faulted | 1NF |
@@ -74,7 +74,7 @@ speed), and one table above `MAX_ROWS_PER_TABLE` (sampling). All data is synthet
 | `t_3nf_multi` | Two separate transitive dependencies in one table | faulted | 2NF |
 | `t_3nf_wide` | 1 000+ rows; a transitive dependency with a 3-column determinant | faulted | 2NF |
 | `t_cross_copy` | Declared FK to a customers table and a copied `customer_name`; weak coincidence evidence alone, strong through the cross-table match | faulted | 2NF |
-| `t_nokey_inferred` | No declared key, but data has a unique column set and a transitive dependency | faulted, lower confidence, note about inferred key | 2NF |
+| `t_nokey_inferred` | No declared key, but data has a verified data-derived key and a transitive dependency | suspected, lower confidence | 2NF |
  
 ### Must stay clean
  
@@ -94,7 +94,7 @@ speed), and one table above `MAX_ROWS_PER_TABLE` (sampling). All data is synthet
 | `d_coincidence` | About 100 rows, random categorical columns; an FD that holds by chance | suspected at most, ideally clean |
 | `d_many_columns` | 15 random categorical columns, 1 000 rows; thousands of candidates, so some hold by luck unless the candidate correction works | clean |
 | `d_nulls` | Columns with many NULLs | clean, NULL handling visible in evidence |
-| `d_near_fd` | A real dependency with 1 or 2 dirty rows in groups of 3+ | faulted or suspected, flagged "holds with exceptions", exceptions shown |
+| `d_near_fd` | A real dependency with 1 or 2 dirty rows in groups of 3+ | faulted or suspected, flagged "holds with exceptions", exceptions shown; exact supersets induced by the dirty rows must not create a hard violation |
 | `d_dirty_pairs` | Groups of only 2 rows that disagree | not reported as an FD |
 | `d_equiv_cols` | `country_code` and `country_name` in a lookup table | clean; equivalent columns shown once if reported |
 | `d_wide_text` | Long text and LOB columns | clean, excluded columns noted |

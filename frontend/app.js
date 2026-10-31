@@ -7,7 +7,7 @@
    initApp(), which only runs in an actual browser.
    --------------------------------------------------------------------- */
 
-const DEFAULT_PORTS = { mysql: 3306, postgresql: 5432, oracle: 1521 };
+const DEFAULT_PORTS = { mysql: 3306, postgresql: 5432, oracle: 1521, mssql: 1433 };
 
 /**
  * Field-level validation of the connect form. `s` shape:
@@ -152,7 +152,8 @@ const STRIP_TITLES = {
   transitive: "Transitive dependency (violates 3NF).",
   partial: "Partial dependency (violates 2NF).",
   bcnf: "Non-key determinant (violates BCNF).",
-  "no-key": "No usable key (below 1NF).",
+  "no-key": "No candidate key established (higher forms cannot be confirmed).",
+  "unknown-key": "Candidate-key search incomplete.",
   delimited: "Multi-valued cells (below 1NF).",
   repeating: "Repeating group (below 1NF).",
 };
@@ -202,19 +203,106 @@ function truncLabel(label, n) {
 }
 
 /**
- * Dependency-graph SVG: key → determinant → dependent, with a dashed
- * "transitive" arc (transitive only) or a double-headed arrow (equivalent).
- * Pure — same palette as the surrounding card.
+ * Choose graph nodes from explicit FD evidence where possible.
+ * For a 3NF/transitive graph, prefer an actual two-FD chain A→B→C.
+ * If no such chain exists, fall back to the candidate-key context but mark
+ * that first relationship as key-implied rather than presenting it as a
+ * discovered FD.
+ * Pure.
+ */
+function dependencyGraphContext(full, worst) {
+  const fds = (full && full.fds) || [];
+  const det = (worst && worst.determinant) || [];
+  const dep = ((worst && worst.dependents) || ["?"])[0];
+  if (worst && worst.kind === "transitive" && det.length > 0 && dep) {
+    const target = fds.find((f) =>
+      (f.determinant || []).join("\0") === det.join("\0") && f.dependent === dep);
+    if (target) {
+      const second = fds.find((f) =>
+        f.dependent === dep &&
+        (f.determinant || []).join("\0") !== det.join("\0") &&
+        (f.determinant || []).length === 1);
+      if (second) {
+        const middle = (second.determinant || [])[0];
+        const first = fds.find((f) =>
+          (f.determinant || []).join("\0") === det.join("\0") &&
+          f.dependent === middle);
+        if (first) {
+          return {
+            first: (first.determinant || []).join(", ") || "?",
+            middle,
+            last: dep,
+            firstEdgeLabel: null,
+          };
+        }
+      }
+    }
+
+    // Candidate keys functionally determine every attribute. If the
+    // discovered FD list does not contain key -> determinant, use that
+    // logical key-closure edge for the explanation, but label it clearly as
+    // key-implied rather than presenting it as a discovered FD.
+    const keys = keyColumns(full) || [];
+    if (keys.length > 0 && keys.join("\0") !== det.join("\0") && !keys.includes(dep)) {
+      return {
+        first: keys.join(", "),
+        middle: det.join(", "),
+        last: dep,
+        firstEdgeLabel: "key-implied",
+      };
+    }
+
+    return {
+      first: det.join(", ") || "?",
+      middle: dep || "?",
+      last: null,
+      compact: true,
+      firstEdgeLabel: null,
+    };
+  }
+  return {
+    first: (keyColumns(full) || []).join(", ") || "?",
+    middle: det.join(", ") || "?",
+    last: dep || "?",
+    firstEdgeLabel: null,
+  };
+}
+
+/**
+ * Dependency-graph SVG. Graph edges are grounded in explicit FD evidence
+ * whenever a chain exists; a fallback key edge is visibly marked
+ * "key-implied" rather than being presented as a discovered FD.
+ * Pure.
  */
 function buildGraphSVG(uid, keyLabel, detLabel, depLabel, opts) {
   const o = opts || {};
   const ink = "#1c211d", danger = "#a3291f", accent = "#2f4b8f";
+  if (o.compact) {
+    const w1 = graphNodeW(keyLabel), w2 = graphNodeW(detLabel);
+    const gap = 34, pad = 4, nh = 32, ny = 4;
+    const x1 = pad, x2 = x1 + w1 + gap;
+    const W = Math.round(x2 + w2 + pad), H = 92, cy = ny + nh / 2;
+    const node = (x, w, label, fill, stroke, color) =>
+      `<rect x="${x}" y="${ny}" width="${w}" height="${nh}" rx="4" fill="${fill}" stroke="${stroke}" stroke-width="1.5"/>` +
+      `<text x="${x + w / 2}" y="${ny + 20}" text-anchor="middle" font-size="12" font-weight="600" fill="${color}" font-family="ui-monospace, Menlo, Consolas, monospace">${esc(label)}</text>`;
+    let out = `<svg class="rc-graph" viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${esc(keyLabel)} determines ${esc(detLabel)}; dashed arc marks the transitive dependency relative to the candidate key">`;
+    out += `<defs><marker id="${uid}m" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6" fill="none" stroke="${ink}" stroke-width="1.5"/></marker><marker id="${uid}r" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6" fill="none" stroke="${danger}" stroke-width="1.5"/></marker></defs>`;
+    out += node(x1, w1, keyLabel, "#e6ebe6", "#b9c0b3", ink);
+    out += node(x2, w2, detLabel, "#f6e4e2", danger, danger);
+    out += `<line x1="${x1 + w1 + 2}" y1="${cy}" x2="${x2 - 2}" y2="${cy}" stroke="${ink}" stroke-width="1.5" marker-end="url(#${uid}m)"/>`;
+    out += `<path d="M${x1 + w1 / 2},${ny + nh + 2} Q${W / 2},${H - 2} ${x2 + w2 / 2},${ny + nh + 4}" fill="none" stroke="${danger}" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#${uid}r)"/>`;
+    out += `<text x="${W / 2}" y="${H - 12}" text-anchor="middle" font-size="11" fill="${danger}" font-family="system-ui, sans-serif">transitive</text>`;
+    return out + `</svg>`;
+  }
   const w1 = graphNodeW(keyLabel), w2 = graphNodeW(detLabel),
     w3 = graphNodeW(depLabel);
-  const gap = 30, pad = 4, nh = 32, ny = 4;
+  const gap = 30, pad = 4, nh = 32;
+  // Give the optional key-implied label its own top margin so it never
+  // overlaps the candidate-key box.
+  const ny = o.firstEdgeLabel ? 14 : 4;
   const x1 = pad, x2 = x1 + w1 + gap, x3 = x2 + w2 + gap;
   const W = Math.round(x3 + w3 + pad);
-  const H = o.arc ? 92 : 44;
+  const H = o.arc ? (o.firstEdgeLabel ? 104 : 92) : (o.firstEdgeLabel ? 60 : 44);
   const cy = ny + nh / 2;
   const node = (x, w, label, fill, stroke, color) =>
     `<rect x="${x}" y="${ny}" width="${w}" height="${nh}" rx="4" fill="${fill}" stroke="${stroke}" stroke-width="1.5"/>` +
@@ -223,13 +311,17 @@ function buildGraphSVG(uid, keyLabel, detLabel, depLabel, opts) {
     ? ` marker-start="url(#${uid}m)" marker-end="url(#${uid}m)"`
     : ` marker-end="url(#${uid}m)"`;
   const color2 = o.double ? danger : ink;
-  let s = `<svg class="rc-graph" viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${esc(keyLabel)} determines ${esc(detLabel)}, which determines ${esc(depLabel)}${o.arc ? "; dashed arrow marks the transitive dependency" : ""}${o.double ? "; double-headed arrow marks equivalent columns" : ""}">`;
+  let s = `<svg class="rc-graph" viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${esc(keyLabel)} determines ${esc(detLabel)}, which determines ${esc(depLabel)}${o.firstEdgeLabel ? `; first relationship is ${esc(o.firstEdgeLabel)}` : ""}${o.arc ? `; dashed arrow marks the ${esc(o.arc)} dependency` : ""}${o.double ? "; double-headed arrow marks equivalent columns" : ""}">`;
   s += `<defs><marker id="${uid}m" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6" fill="none" stroke="${o.double ? danger : ink}" stroke-width="1.5"/></marker>` +
     `<marker id="${uid}r" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6" fill="none" stroke="${danger}" stroke-width="1.5"/></marker></defs>`;
   s += node(x1, w1, keyLabel, "#e3e9f6", accent, accent);
   s += node(x2, w2, detLabel, "#e6ebe6", "#b9c0b3", ink);
   s += node(x3, w3, depLabel, "#f6e4e2", danger, danger);
-  s += `<line x1="${x1 + w1 + 2}" y1="${cy}" x2="${x2 - 2}" y2="${cy}" stroke="${ink}" stroke-width="1.5" marker-end="url(#${uid}m)"/>`;
+  const firstDash = o.firstEdgeLabel ? ` stroke-dasharray="4 3"` : "";
+  s += `<line x1="${x1 + w1 + 2}" y1="${cy}" x2="${x2 - 2}" y2="${cy}" stroke="${ink}" stroke-width="1.5"${firstDash} marker-end="url(#${uid}m)"/>`;
+  if (o.firstEdgeLabel) {
+    s += `<text x="${(x1 + w1 + x2) / 2}" y="${ny - 5}" text-anchor="middle" font-size="9" fill="${ink}" font-family="system-ui, sans-serif">${esc(o.firstEdgeLabel)}</text>`;
+  }
   s += `<line x1="${x2 + w2 + 2}" y1="${cy}" x2="${x3 - 2}" y2="${cy}" stroke="${color2}" stroke-width="1.5"${arrow}/>`;
   if (o.arc) {
     const kx = x1 + w1 / 2, dx = x3 + w3 / 2;
@@ -246,11 +338,35 @@ function buildGraphSVG(uid, keyLabel, detLabel, depLabel, opts) {
  * `expanded`: Set of open toggle keys (`<table>‖ev‖<i>`, `<table>‖sugg`).
  * Pure — Node-tested against a fixture covering every violation kind.
  */
+function violationGroups(full, kind) {
+  const groups = [];
+  const seen = new Map();
+  for (const v of (full.violations || [])) {
+    if (v.kind !== kind) continue;
+    const det = (v.determinant || []).join("\0");
+    let g = seen.get(det);
+    if (!g) {
+      g = { determinant: v.determinant || [], dependents: [] };
+      seen.set(det, g); groups.push(g);
+    }
+    for (const dep of (v.dependents || [])) if (!g.dependents.includes(dep)) g.dependents.push(dep);
+  }
+  return groups;
+}
+
+function keySourceLabel(source) {
+  if (source === "declared") return "schema-declared";
+  if (source === "inferred_verified") return "data-inferred (full-table verified)";
+  if (source === "inferred_sample") return "data-inferred (sample)";
+  if (source === "inferred") return "data-inferred";
+  return source ? String(source).replaceAll("_", " ") : "";
+}
+
 function buildCardHTML(name, full, status, expanded) {
   const exp = expanded instanceof Set ? expanded : new Set();
   const f = full || {};
   const suspected = status === "suspected";
-  const nf = (suspected ? "possibly " : "") + (f.normal_form || "?");
+  const nf = f.normal_form || "?";
   const safe = escId(name);
   const parts = [];
 
@@ -258,17 +374,33 @@ function buildCardHTML(name, full, status, expanded) {
   const cols = f.columns || [];
   const keys = keyColumns(f);
   const keyChips = keys.map((k) => `<span class="key-chip">${esc(k)}</span>`).join(" ");
+  const candidateKeys = (f.keys || []).map((k) => (k.columns || []).join(", "));
+  const keySource = (f.keys && f.keys[0] && f.keys[0].source) || "";
   const conf = f.key_confidence;
   const confPill = conf
     ? `<span class="pill pill-${conf === "High" ? "high" : "medium"}">${esc(conf)}</span>` : "";
   parts.push(`<div class="rc-head"><span class="rc-title mono">${esc(name)}</span>` +
     `<span class="pill ${suspected ? "pill-nf-suspected" : "pill-nf-faulted"}">${esc(nf)}</span>` +
     `<button type="button" class="btn btn-secondary btn-small rc-hide" data-act="hide">Hide card</button></div>`);
-  parts.push(`<div class="rc-meta">${fmtInt(f.row_count)} rows · ${cols.length} columns` +
-    (keys.length > 0 ? ` · Key ${keyChips} ${confPill}`
-      : ` · <span class="rc-muted">no key declared or found</span>`) +
-    (f.sampled ? ` · <span class="rc-muted">sampled (first 50,000 rows)</span>` : "") +
-    `</div>`);
+  const keyInfo = keys.length > 0
+    ? ` · Key ${keyChips} ${confPill}` +
+      (candidateKeys.length > 1 ? ` <span class="rc-muted">+${candidateKeys.length - 1} candidate key${candidateKeys.length > 2 ? "s" : ""}</span>` : "") +
+      (keySource ? ` <span class="rc-muted">${esc(keySourceLabel(keySource))}</span>` : "")
+    : ` · <span class="rc-muted">candidate key not established</span>`;
+  const completeness = f.analysis_complete === false
+    ? ` · <span class="rc-muted">not confirmed / evidence-dependent</span>` : "";
+  parts.push(`<div class="rc-meta">${fmtInt(f.row_count)} rows · ${cols.length} columns${keyInfo}` +
+    (f.sampled ? ` · <span class="rc-muted">sampled for discovery; exact candidates validated on full table where possible</span>` : "") +
+    completeness + `</div>`);
+
+  for (const limitation of f.analysis_limitations || []) {
+    parts.push(`<div class="rc-strip rc-strip-faulted"><span class="rc-strip-title">Analysis limitation.</span> <span>${esc(limitation)}</span></div>`);
+  }
+
+  const fs = f.fd_summary || {};
+  if (fs.total_discovered != null && fs.weak_suppressed > 0) {
+    parts.push(`<div class="rc-muted rc-fd-summary">FD evidence: ${esc(fs.strong || 0)} strong · ${esc(fs.suspected || 0)} material suspected · ${esc(fs.weak_suppressed || 0)} weak observations suppressed from the main report.</div>`);
+  }
 
   // Violation strips, one per violation.
   for (const v of f.violations || []) {
@@ -282,13 +414,14 @@ function buildCardHTML(name, full, status, expanded) {
   const pfd = primaryFD(f, worst);
   const equiv = !!(worst && (worst.equivalent || (pfd && pfd.equivalent)));
   if (worst && (worst.kind === "transitive" || worst.kind === "partial")) {
-    const keyLabel = truncLabel((keys.length > 0 ? keys : ["?"]).join(", "), 28);
-    const detLabel = truncLabel((worst.determinant || ["?"]).join(", "), 28);
-    const depLabel = truncLabel((worst.dependents || ["?"]).join(", "), 28);
+    const graph = dependencyGraphContext(f, worst);
+    const keyLabel = truncLabel(graph.first, 28);
+    const detLabel = truncLabel(graph.middle, 28);
+    const depLabel = truncLabel(graph.last, 28);
     const labels = `<div class="rc-graphwrap"><p class="rc-lbl">Dependency graph</p>` +
       buildGraphSVG(`g-${safe}-`, keyLabel, detLabel, depLabel,
-        { arc: worst.kind === "transitive" && !equiv ? "transitive" : null,
-          double: equiv }) +
+        { arc: !equiv ? (worst.kind === "transitive" ? "transitive" : "partial dependency") : null,
+          firstEdgeLabel: graph.firstEdgeLabel, compact: !!graph.compact, double: equiv }) +
       (equiv ? `<p class="rc-eq"><span class="eq-chip">EQ</span> equivalent columns</p>` : "") +
       `</div>`;
     let example = "";
@@ -308,7 +441,7 @@ function buildCardHTML(name, full, status, expanded) {
         `<div class="rc-tablewrap"><table class="rc-table mono"><tbody><tr>${ths}</tr>${rows}</tbody></table></div></div>`;
     }
     parts.push(`<div class="rc-body${example ? "" : " rc-body-single"}">${labels}${example}</div>`);
-  } else if (worst && (worst.kind === "delimited" || worst.kind === "repeating" || worst.kind === "no-key")) {
+  } else if (worst && (worst.kind === "delimited" || worst.kind === "repeating" || worst.kind === "no-key" || worst.kind === "unknown-key")) {
     const chipCols = worst.kind === "no-key"
       ? cols.map((c) => c.name) : (worst.dependents || []);
     const chips = chipCols.map((c) => `<span class="chip-mono">${esc(c)}</span>`).join(" ");
@@ -336,6 +469,7 @@ function buildCardHTML(name, full, status, expanded) {
     const ev = fd.evidence || {};
     const lines = [];
     lines.push(`${ev.distinct_det ?? "—"} distinct values · ${ev.repeated_rows ?? "—"} repeated rows · ${ev.candidates_tested ?? "—"} candidates tested`);
+    if (ev.repeated_row_coverage != null) lines.push(`Repeated-row coverage: ${(Number(ev.repeated_row_coverage) * 100).toFixed(2)}%`);
     lines.push(`Chance of coincidence: about ${((fd.coincidence && fd.coincidence.text) || "—")}`);
     if ((fd.exceptions || 0) > 0) {
       lines.push(`Holds with ${fd.exceptions} exception rows`);
@@ -372,27 +506,18 @@ function buildCardHTML(name, full, status, expanded) {
       const key = `${name}‖sugg`;
       const open = exp.has(key);
       const eid = `sugg-${safe}`;
-      const det = worst.determinant || [];
-      const deps = worst.dependents || [];
-      const rest = cols.map((c) => c.name)
-        .filter((n) => !keys.includes(n) && !det.includes(n) && !deps.includes(n));
-      const shown = rest.slice(0, 8);
-      const more = rest.length - shown.length;
+      const groups = violationGroups(f, worst.kind);
       const li = (n, tag) => `<li>${esc(n)}${tag ? ` <span class="rc-tag">${esc(tag)}</span>` : ""}</li>`;
-      const orig = keys.map((n) => li(n, "PK")).join("") +
-        det.map((n) => li(n, "link")).join("") +
-        shown.map((n) => li(n, "")).join("") +
-        (more > 0 ? `<li class="rc-muted">+ ${more} more</li>` : "");
-      const newTitle = equiv
-        ? `new lookup table (keyed by ${det.join(", ")})`
-        : `new table (keyed by ${det.join(", ")})`;
-      const newbox = det.map((n) => li(n, "key")).join("") +
-        deps.map((n) => li(n, "")).join("");
-      parts.push(`<div class="rc-sugg" id="${eid}"${open ? "" : " hidden"}>` +
-        `<div class="rc-split"><div class="rc-tbox rc-tbox-orig"><h5>${esc(name)}</h5><ul>${orig}</ul></div>` +
-        `<span class="rc-splitarr" aria-hidden="true">→</span>` +
-        `<div class="rc-tbox rc-tbox-new"><h5>${esc(newTitle)}</h5><ul>${newbox}</ul></div></div>` +
-        `<p class="rc-muted rc-caption">Illustrative sketch — not runnable DDL.</p></div>`);
+      const boxes = groups.map((g) => {
+        const det = g.determinant || [], deps = g.dependents || [];
+        const rest = cols.map((c) => c.name).filter((n) => !keys.includes(n) && !det.includes(n) && !deps.includes(n));
+        const shown = rest.slice(0, 8), more = rest.length - shown.length;
+        const orig = keys.map((n) => li(n, "PK")).join("") + det.map((n) => li(n, "link")).join("") + shown.map((n) => li(n, "")).join("") + (more > 0 ? `<li class="rc-muted">+ ${more} more</li>` : "");
+        const newTitle = `new table (keyed by ${det.join(", ")})`;
+        const newbox = det.map((n) => li(n, "key")).join("") + deps.map((n) => li(n, "")).join("");
+        return `<div class="rc-split"><div class="rc-tbox rc-tbox-orig"><h5>${esc(name)}</h5><ul>${orig}</ul></div><span class="rc-splitarr" aria-hidden="true">→</span><div class="rc-tbox rc-tbox-new"><h5>${esc(newTitle)}</h5><ul>${newbox}</ul></div></div>`;
+      }).join("");
+      parts.push(`<div class="rc-sugg" id="${eid}"${open ? "" : " hidden"}>${boxes}<p class="rc-muted rc-caption">Illustrative sketch — not runnable DDL.</p></div>`);
     }
   }
   return parts.join("\n");
@@ -433,8 +558,9 @@ function formatHeadline(counts, finished, selected, notSelected) {
   if (notSelected > 0) head += ` (${notSelected} not selected)`;
   const tail = [];
   const order = [["faulted", "faulted"], ["suspected", "suspected"],
-    ["insufficient_data", "insufficient data"], ["clean", "clean"],
-    ["error", "error"], ["not_run", "not run"]];
+    ["bcnf_faulted", "BCNF violation"], ["bcnf_suspected", "suspected BCNF"],
+    ["incomplete", "unconfirmed"], ["insufficient_data", "insufficient data"],
+    ["clean", "clean"], ["error", "error"], ["not_run", "not run"]];
   for (const [key, label] of order) {
     if (counts[key]) tail.push(`${counts[key]} ${label}`);
   }
@@ -449,6 +575,9 @@ function statusBadge(state, normalForm) {
     case "clean": return ["Clean", "badge-clean"];
     case "faulted": return ["Faulted", "badge-faulted"];
     case "suspected": return ["Suspected", "badge-suspected"];
+    case "bcnf_faulted": return ["BCNF violation", "badge-faulted"];
+    case "bcnf_suspected": return ["BCNF suspected", "badge-suspected"];
+    case "incomplete": return ["Faulted", "badge-faulted"];
     case "insufficient_data": return ["Insufficient data", "badge-insufficient"];
     case "error": return ["Error", "badge-error"];
     case "not_run": return ["Scan stopped", "badge-notrun"];
@@ -486,6 +615,9 @@ const logic = {
   wrapText,
   confLevel,
   stripTitle,
+  buildGraphSVG,
+  dependencyGraphContext,
+  keySourceLabel,
   worstViolation,
   keyColumns,
   buildCardHTML,
@@ -522,9 +654,11 @@ function initApp() {
     username: document.getElementById("username"),
     password: document.getElementById("login-password"),
     serviceName: document.getElementById("service-name"),
+    driver: document.getElementById("odbc-driver"),
     schema: document.getElementById("schema"),
     ssl: document.getElementById("ssl"),
     fieldService: document.getElementById("field-service"),
+    fieldDriver: document.getElementById("field-driver"),
     fieldSchema: document.getElementById("field-schema"),
     formError: document.getElementById("form-error"),
     connSummary: document.getElementById("conn-summary"),
@@ -652,7 +786,8 @@ function initApp() {
   function updateEngineFields() {
     const t = currentDbType();
     els.fieldService.hidden = t !== "oracle";
-    els.fieldSchema.hidden = t !== "postgresql";
+    els.fieldDriver.hidden = t !== "mssql";
+    els.fieldSchema.hidden = !(t === "postgresql" || t === "mssql");
     els.port.placeholder = logic.DEFAULT_PORTS[t] || "";
   }
 
@@ -732,6 +867,7 @@ function initApp() {
       password: els.password.value,
       serviceName: els.serviceName.value,
       schema: els.schema.value,
+      driver: els.driver.value,
       ssl: els.ssl.checked,
     };
   }
@@ -1060,8 +1196,8 @@ function initApp() {
   // ---------- rendering (full re-render: idempotent, resync-safe)
 
   function currentCounts() {
-    const counts = { faulted: 0, suspected: 0, insufficient_data: 0,
-      clean: 0, error: 0, not_run: 0 };
+    const counts = { faulted: 0, suspected: 0, bcnf_faulted: 0, bcnf_suspected: 0,
+      incomplete: 0, insufficient_data: 0, clean: 0, error: 0, not_run: 0 };
     for (const st of state.statuses.values()) {
       if (st.state === "checking" || st.state === "queued") continue;
       if (st.state in counts) counts[st.state] += 1;
@@ -1142,7 +1278,7 @@ function initApp() {
       li.appendChild(nm);
       li.appendChild(badge);
       li.appendChild(detail);
-      if ((st.state === "faulted" || st.state === "suspected") &&
+      if (["faulted", "suspected", "bcnf_faulted", "bcnf_suspected", "incomplete"].includes(st.state) &&
           state.cards.has(name)) {
         li.classList.add("done");
         if (state.openCard === name) li.classList.add("selected");
@@ -1216,7 +1352,7 @@ function initApp() {
     // Only faulted/suspected tables have viewable cards; insufficient_data
     // entries travel in the payload for the PDF but open no card.
     const viewable = [...state.statuses.values()]
-      .some((st) => st.state === "faulted" || st.state === "suspected");
+      .some((st) => ["faulted", "suspected", "bcnf_faulted", "bcnf_suspected", "incomplete"].includes(st.state));
     const openShown = state.openCard && state.cards.has(state.openCard);
     els.cardsHint.hidden = !(viewable && !openShown);
   }
@@ -1228,10 +1364,10 @@ function initApp() {
   function renderSimpleCard(name, full) {
     const st = state.statuses.get(name) || {};
     const article = document.createElement("article");
-    article.className = "result-card" + (st.state === "suspected" ? " suspected" : "");
+    article.className = "result-card" + (["suspected", "bcnf_suspected"].includes(st.state) ? " suspected" : "");
     article.id = `card-${name}`;
     article.innerHTML = logic.buildCardHTML(name, full,
-      st.state === "suspected" ? "suspected" : "faulted", state.expanded);
+      ["suspected", "bcnf_suspected"].includes(st.state) ? "suspected" : "faulted", state.expanded);
     article.querySelectorAll("button[data-act]").forEach((btn) => {
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -1258,9 +1394,9 @@ function initApp() {
       state.statuses = new Map(selected.map((n) => [n, { state: "queued" }]));
     }
     for (const s of payload.table_summary || []) {
-      if (s.status === "faulted" || s.status === "suspected") continue;
+      if (["faulted", "suspected", "bcnf_faulted", "bcnf_suspected", "incomplete"].includes(s.status)) continue;
       state.statuses.set(s.name, { state: s.status,
-        normalForm: s.normal_form || undefined,
+        normalForm: s.current_normal_form || s.normal_form || undefined,
         secs: s.duration_seconds || 0 });
     }
     state.cards = new Map();
@@ -1269,11 +1405,11 @@ function initApp() {
     for (const t of payload.tables || []) {
       state.cards.set(t.name, t);
       state.statuses.set(t.name, { state: t.status,
-        normalForm: t.normal_form || undefined, secs: 0 });
+        normalForm: t.current_normal_form || t.normal_form || undefined, secs: 0 });
     }
     state.notices = payload.notices || [];
-    const counts = { faulted: 0, suspected: 0, insufficient_data: 0,
-      clean: 0, error: 0, not_run: 0 };
+    const counts = { faulted: 0, suspected: 0, bcnf_faulted: 0, bcnf_suspected: 0,
+      incomplete: 0, insufficient_data: 0, clean: 0, error: 0, not_run: 0 };
     for (const s of payload.table_summary || []) {
       if (s.status in counts) counts[s.status] += 1;
     }

@@ -73,3 +73,20 @@ the same values typed into its form.
   values — handle PDFs accordingly.
 - "Live progress connection was lost": the scan keeps running; the
   page re-syncs itself. If the backend was restarted, start again.
+
+
+## Microsoft SQL Server (MSSQL)
+
+MSSQL connections use `mssql+pyodbc` and default to port 1433. The default driver is
+`ODBC Driver 18 for SQL Server`; the UI allows an alternate installed driver name.
+
+The machine running the tool must have:
+1. the Python `pyodbc` package installed, and
+2. a Microsoft SQL Server ODBC driver installed and available to the operating system.
+
+The Connect step uses the `master` database when it needs to enumerate databases. After
+the user selects a database, the scan reconnects to that database. An optional schema may
+be supplied; otherwise SQL Server's normal login/default-schema resolution is used.
+
+The connection requests `ApplicationIntent=ReadOnly`. The application also guards its
+query path so analysis statements are SELECT-family statements only.

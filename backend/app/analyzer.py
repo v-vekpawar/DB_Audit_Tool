@@ -24,10 +24,10 @@ from .db_connect import (
     map_exception,
 )
 from .estimator import Estimator, work_units
-from .fd_discovery import count_candidates, discover
+from .fd_discovery import count_candidates, discover, brute_force_discover
 from .fd_scoring import score_fd
 from .keys import candidate_keys
-from .loader import bounded_count, load_table, split_columns
+from .loader import bounded_count, load_table, split_columns, _table_ref
 from .logging_setup import StepTimer, get_logger, setup_logging
 from .metadata import database_structure, list_tables, table_detail
 from .normal_forms import classify
@@ -37,12 +37,15 @@ TABLE_STEPS = ("loading", "finding dependencies", "scoring", "classifying")
 
 
 def headline(counts, selected, not_selected):
-    finished = sum(counts.get(k, 0) for k in ("faulted", "suspected",
-                                              "insufficient_data", "clean",
-                                              "error"))
+    finished = sum(counts.get(k, 0) for k in ("faulted", "suspected", "bcnf_faulted",
+                                              "bcnf_suspected", "incomplete", "insufficient_data",
+                                              "clean", "error"))
     parts = "%d of %d tables scanned" % (finished, selected + not_selected)
     tail = []
     for key, label in (("faulted", "faulted"), ("suspected", "suspected"),
+                       ("bcnf_faulted", "BCNF violations"),
+                       ("bcnf_suspected", "suspected BCNF"),
+                       ("incomplete", "incomplete"),
                        ("insufficient_data", "insufficient data"),
                        ("clean", "clean"), ("error", "error"),
                        ("not_run", "not run")):
@@ -76,6 +79,86 @@ def _raw_values(loaded, col):
     lab = loaded.labels.get(col, [])
     return [lab[c] if c is not None and 0 <= c < len(lab) else None
             for c in loaded.coded.get(col, [])]
+
+
+
+def _fd_signature(fds):
+    """Return a stable FD signature for FoundFD/ScoredFD-like objects.
+
+    FD discovery returns dataclass objects (FoundFD), not dictionaries.  The
+    analyzer previously indexed them with f[...], so any table that produced
+    at least one exact FD crashed during the brute-force/TANE parity check.
+    Keep this helper object-based and deliberately independent of scoring.
+    """
+    return sorted(
+        (tuple(sorted(f.determinant)), f.dependent)
+        for f in fds
+        if getattr(f, "kind", None) == "exact"
+    )
+
+
+def _validate_exact_fds_full(conn, db_type, detail, schema, fds):
+    """Validate sampled exact-FD candidates against the complete table.
+
+    This confirms candidates but cannot discover a dependency that the sample
+    search never generated; callers therefore keep the search-complete flag.
+    """
+    if not fds:
+        return []
+    from sqlalchemy import case, func, select
+    searchable = [c["name"] for c in detail.get("columns", [])]
+    t = _table_ref(detail["name"], searchable,
+                   None if (db_type or "").lower() == "mysql" else schema,
+                   db_type)
+    out = []
+    for fd in fds:
+        if getattr(fd, "kind", None) != "exact":
+            out.append(fd)
+            continue
+        det = list(fd.determinant)
+        dep = fd.dependent
+        dcols = [t.c[c] for c in det]
+        y = t.c[dep]
+        q = select(*dcols).select_from(t)
+        if dcols:
+            q = q.where(*[c.is_not(None) for c in dcols]).group_by(*dcols)
+            null_count = func.coalesce(func.sum(case((y.is_(None), 1), else_=0)), 0)
+            distinct_count = func.count(y.distinct()) + case((null_count > 0, 1), else_=0)
+            q = q.having(distinct_count > 1).limit(1)
+        else:
+            # Empty determinant is not currently a discovered determinant.
+            q = q.limit(1)
+        row = conn.execute(q).first()
+        if row is None:
+            fd.equivalent = bool(fd.equivalent)
+            out.append(fd)
+    return out
+
+
+def _validate_inferred_keys_full(conn, db_type, detail, schema, keys):
+    """Promote sample-inferred keys only after full-table uniqueness validation."""
+    from sqlalchemy import func, select
+    searchable = [c["name"] for c in detail.get("columns", [])]
+    t = _table_ref(detail["name"], searchable,
+                   None if (db_type or "").lower() == "mysql" else schema,
+                   db_type)
+    out = []
+    for k in keys:
+        if k.get("source") != "inferred_sample":
+            out.append(k)
+            continue
+        cols = list(k["columns"])
+        qnull = select(1).select_from(t).where(*[t.c[c].is_(None) for c in cols]).limit(1)
+        if conn.execute(qnull).first() is not None:
+            continue
+        qdup = select(*[t.c[c] for c in cols]).select_from(t).group_by(
+            *[t.c[c] for c in cols]).having(func.count() > 1).limit(1)
+        if conn.execute(qdup).first() is None:
+            k = dict(k)
+            k["source"] = "inferred_verified"
+            k["guaranteed"] = False
+            out.append(k)
+    return out
 
 
 def analyze_table(conn, db_type, detail, schema, scan_id, ref_cache,
@@ -114,16 +197,39 @@ def analyze_table(conn, db_type, detail, schema, scan_id, ref_cache,
     step("finding dependencies")
     with StepTimer("fd_discovery", scan_id, name):
         res = discover(loaded.coded, loaded.columns, loaded.row_count,
-                       keys_decl)
-        log.info("fds=%d near=%d tested=%d pruned=%d m=%d", len(res.fds),
+                       keys_decl, algorithm="auto")
+        parity = None
+        if (config.RUN_BRUTE_FORCE_PARITY and len(loaded.columns) <= config.BRUTE_FORCE_MAX_COLUMNS
+                and res.algorithm == "bruteforce"):
+            # Run the partition search independently as a regression oracle.
+            tane = discover(loaded.coded, loaded.columns, loaded.row_count,
+                            keys_decl, limit=max(1, len(loaded.columns) - 1),
+                            algorithm="tane")
+            parity = (_fd_signature(res.fds) == _fd_signature(tane.fds))
+            if not parity:
+                log.error("FD search parity mismatch: brute_force=%s tane=%s",
+                          _fd_signature(res.fds), _fd_signature(tane.fds),
+                          extra={"scan_id": scan_id, "step": "fd_discovery", "table": name})
+        log.info("algorithm=%s complete=%s fds=%d near=%d tested=%d pruned=%d m=%d parity=%s",
+                 res.algorithm, res.complete, len(res.fds),
                  sum(1 for f in res.fds if f.kind == "near"),
-                 res.tests, res.pruned, res.m,
+                 res.tests, res.pruned, res.m, parity,
                  extra={"scan_id": scan_id, "step": "fd_discovery", "table": name})
+
+    # A row cap is a discovery aid, not proof. Validate exact candidates on the
+    # full table before they can become strong evidence.
+    if loaded.sampled:
+        res.fds = _validate_exact_fds_full(conn, db_type, detail, schema, res.fds)
 
     step("scoring")
     with StepTimer("fd_scoring", scan_id, name):
         scored = [score_fd(loaded.coded, loaded.labels, f, res.m,
-                           sampled=loaded.sampled) for f in res.fds]
+                           sampled=False if loaded.sampled and f.kind == "exact" else loaded.sampled)
+                  for f in res.fds]
+        for s in scored:
+            if loaded.sampled and s.kind == "exact":
+                s.evidence["full_table_validated"] = True
+                s.evidence["evidence_level"] = "DATA_OBSERVED"
         by_tier = {}
         for s in scored:
             by_tier[s.tier] = by_tier.get(s.tier, 0) + 1
@@ -137,20 +243,33 @@ def analyze_table(conn, db_type, detail, schema, scan_id, ref_cache,
     step("classifying")
     with StepTimer("classify", scan_id, name):
         keys = candidate_keys(detail, loaded.coded, loaded.columns,
-                              loaded.row_count)
+                              loaded.row_count, complete_data=not loaded.sampled)
+        if loaded.sampled:
+            keys["keys"] = _validate_inferred_keys_full(
+                conn, db_type, detail, schema, keys["keys"])
+            keys["inferred"] = [k for k in keys["keys"]
+                                 if k.get("source") in ("inferred", "inferred_verified", "inferred_sample")]
+            keys["prime"] = {c for k in keys.get("formal_keys", keys["keys"]) for c in k["columns"]}
+            if "formal_keys" in keys:
+                keys["formal_keys"] = _filter_formal_keys_after_validation(keys["formal_keys"], keys["keys"])
+            keys["status"] = "incomplete"
         stats = _col_stats(detail, loaded)
         strong = [s for s in scored if s.tier == "strong"]
         susp = [s for s in scored if s.tier == "suspected"]
         F = lambda s: {"determinant": s.determinant, "dependent": s.dependent,
-                       "kind": s.kind, "equivalent": s.equivalent}
+                       "kind": s.kind, "equivalent": s.equivalent,
+                       "confidence": s.confidence, "exceptions": s.exceptions,
+                       "exception_rows": list(s.exception_rows)}
         verdict = classify(name, detail, [F(s) for s in strong],
                            [F(s) for s in susp], keys, stats,
-                           loaded.row_count)
+                           loaded.row_count,
+                           complete_data=not loaded.sampled,
+                           fd_search_complete=res.complete and (parity is not False))
         log.info("keys=%d exact=%s status=%s", len(keys["keys"]),
                  verdict["normal_form"], verdict["status"],
                  extra={"scan_id": scan_id, "step": "classify", "table": name})
 
-    result = _assemble(name, detail, loaded, verdict, scored, keys)
+    result = _assemble(name, detail, loaded, verdict, scored, keys, res)
     secs = time.monotonic() - t0
     return result, units, secs
 
@@ -161,8 +280,9 @@ def _col_stats(detail, loaded):
     stats = {}
     for c in detail.get("columns", []):
         n = c["name"]
-        stats[n] = {"labels": loaded.labels.get(n, []),
-                    "counts": loaded.counts.get(n, []),
+        sample = loaded.heuristic_samples.get(n)
+        stats[n] = {"labels": (sample.labels.get(n, []) if sample else loaded.labels.get(n, [])),
+                    "counts": (sample.counts.get(n, []) if sample else loaded.counts.get(n, [])),
                     "type": types.get(n, ""),
                     "null_ratio": loaded.null_ratio.get(n, 0.0),
                     "excluded_in": excl.get(n)}
@@ -186,7 +306,7 @@ def _promote_with_cross_table(conn, db_type, detail, schema, scan_id,
                         "table": detail["name"]})
         return
     cands = [s for s in scored
-             if s.tier in ("strong", "suspected") and len(s.determinant) == 1
+             if s.kind == "exact" and s.tier in ("strong", "suspected") and len(s.determinant) == 1
              and s.determinant[0] in fks]
     if not cands:
         log.info("skipped: no promotable findings",
@@ -236,30 +356,54 @@ def _promote_with_cross_table(conn, db_type, detail, schema, scan_id,
             continue
 
 
-def _assemble(name, detail, loaded, verdict, scored, keys):
+def _filter_formal_keys_after_validation(formal_keys, all_keys):
+    """Keep schema keys authoritative; otherwise use validated observed keys."""
+    if any(k.get("source") == "declared" for k in formal_keys):
+        return [k for k in all_keys if k.get("source") == "declared"]
+    return [k for k in all_keys if k.get("source") in ("inferred", "inferred_verified") ]
+
+
+def _assemble(name, detail, loaded, verdict, scored, keys, discovery=None):
     fk_of = {}
     for fk in detail.get("fks") or []:
         for c, r in zip(fk.get("columns") or [], fk.get("referred_columns") or []):
             fk_of[c] = {"table": fk.get("referred_table"), "column": r}
     pk = set(detail.get("pk") or [])
     kept = [s for s in scored if s.tier in ("strong", "suspected")]
+    strong_count = sum(1 for s in scored if s.tier == "strong")
+    suspected_count = sum(1 for s in scored if s.tier == "suspected")
+    discarded_count = sum(1 for s in scored if s.tier == "discarded")
+    near_count = sum(1 for s in scored if s.kind == "near")
     key_list = keys.get("keys", []) if keys else []
     primary = key_list[0] if key_list else None
     if primary is None:
         key_confidence = None
     elif primary.get("source") == "declared":
         key_confidence = "High"
-    elif all(loaded.null_ratio.get(c, 0.0) <= 0.0
-             for c in primary.get("columns", [])):
-        key_confidence = "High"
+    elif primary.get("source") == "inferred_verified":
+        key_confidence = "Medium"
+    elif primary.get("source") == "inferred_sample":
+        key_confidence = "Low"
     else:
         key_confidence = "Medium"
     return {
         "name": name, "row_count": loaded.row_count, "sampled": loaded.sampled,
         "status": verdict["status"], "normal_form": verdict["normal_form"],
+        "current_normal_form": verdict.get("current_normal_form", verdict["normal_form"]),
+        "violated_normal_form": verdict.get("violated_normal_form"),
+        "analysis_limitations": verdict.get("analysis_limitations", []),
         "keys": [{"columns": list(k.get("columns", [])),
                   "source": k.get("source", "inferred")} for k in key_list],
         "key_confidence": key_confidence,
+        "key_status": keys.get("status", "unknown") if keys else "unknown",
+        "analysis_complete": verdict.get("analysis_complete", False),
+        "fd_discovery": {"algorithm": getattr(discovery, "algorithm", None),
+                         "complete": getattr(discovery, "complete", False),
+                         "tests": getattr(discovery, "tests", 0),
+                         "pruned": getattr(discovery, "pruned", 0)},
+        "fd_summary": {"total_discovered": len(scored), "strong": strong_count,
+                       "suspected": suspected_count, "near": near_count,
+                       "weak_suppressed": discarded_count},
         "columns": [{"name": c["name"], "type": str(c.get("type", "")),
                      "pk": c["name"] in pk, "fk": fk_of.get(c["name"]),
                      "nullable": bool(c.get("nullable", True))}
@@ -272,7 +416,7 @@ def _assemble(name, detail, loaded, verdict, scored, keys):
                  "coincidence": {"exponent": round(s.exponent, 2),
                                  "text": s.coincidence},
                  "evidence": s.evidence} for s in kept],
-        "recommendation": recommend(name, verdict["violations"]),
+        "recommendation": recommend(name, verdict["violations"], key_list),
     }
 
 
@@ -286,8 +430,8 @@ def analyze_db(params, selected, schema=None, scan_id=None, on_event=None,
         started = datetime.datetime.now(datetime.timezone.utc)
         result = {"scan": {}, "table_summary": [], "tables": [],
                   "notices": []}
-        counts = {"faulted": 0, "suspected": 0, "insufficient_data": 0,
-                  "clean": 0, "error": 0, "not_run": 0}
+        counts = {"faulted": 0, "suspected": 0, "bcnf_faulted": 0, "bcnf_suspected": 0,
+                  "incomplete": 0, "insufficient_data": 0, "clean": 0, "error": 0, "not_run": 0}
         result["scan"] = _scan_head(params, schema, scan_id, started, 0.0,
                                     "failed", selected, 0, counts)
         result["error"] = e.error_obj
@@ -315,8 +459,8 @@ def analyze_on_connection(engine, conn, params, selected, schema=None,
     started = datetime.datetime.now(datetime.timezone.utc)
     t_start = time.monotonic()
     result = {"scan": {}, "table_summary": [], "tables": [], "notices": []}
-    counts = {"faulted": 0, "suspected": 0, "insufficient_data": 0,
-              "clean": 0, "error": 0, "not_run": 0}
+    counts = {"faulted": 0, "suspected": 0, "bcnf_faulted": 0, "bcnf_suspected": 0,
+              "incomplete": 0, "insufficient_data": 0, "clean": 0, "error": 0, "not_run": 0}
 
     def emit(ev):
         if on_event:
@@ -432,14 +576,14 @@ def analyze_on_connection(engine, conn, params, selected, schema=None,
                     {"name": name, "status": res["status"],
                      "normal_form": res["normal_form"],
                      "duration_seconds": round(secs, 2)})
-                if res["status"] in ("faulted", "suspected",
-                                       "insufficient_data"):
+                if res["status"] in ("faulted", "suspected", "bcnf_faulted",
+                                       "bcnf_suspected", "incomplete", "insufficient_data"):
                     result["tables"].append(res)
                 emit({"event": "table_done", "table": name,
                       "status": res["status"],
                       "normal_form": res["normal_form"],
                       "duration_seconds": round(secs, 2),
-                      "result": res if res["status"] in ("faulted", "suspected") else None})
+                      "result": res if res["status"] in ("faulted", "suspected", "bcnf_faulted", "bcnf_suspected", "incomplete") else None})
             except ConnectError as e:
                 secs = time.monotonic() - t0
                 code = _per_table_code(e.error_obj["error"]["code"])

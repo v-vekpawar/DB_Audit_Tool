@@ -39,3 +39,5 @@ Chinook*.sql
 Thumbs.db
 .vscode/
 .idea/
+installer/
+runtime/

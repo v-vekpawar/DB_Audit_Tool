@@ -99,6 +99,7 @@ class LoadedTable:
     counts: dict = field(default_factory=dict)  # name -> [rows per code]
     excluded: list = field(default_factory=list)
     order_columns: list = field(default_factory=list)
+    heuristic_samples: dict = field(default_factory=dict)  # excluded wide-text samples
 
 
 def _is_oracle(db_type: str) -> bool:
@@ -117,10 +118,25 @@ def _oracle_from(table: str, schema: str | None) -> str:
 
 def _table_ref(detail_name: str, searchable: list, schema: str | None,
                db_type: str = ""):
+    """Build a dialect-safe SQLAlchemy table reference.
+
+    Names come from database metadata and therefore must be treated as
+    identifiers, not SQL text.  Force identifier quoting for the table,
+    schema, and columns so Oracle can address quoted lowercase/mixed-case
+    objects (for example ``"t_big_sampled"``) as well as conventional
+    uppercase objects.  SQLAlchemy renders the appropriate quote character
+    for each dialect, so this remains portable to MySQL and PostgreSQL and
+    safely handles unusual identifier characters without string interpolation.
+    """
     from sqlalchemy import column as sa_column
     from sqlalchemy import table as sa_table
-    return sa_table(detail_name, *[sa_column(c) for c in searchable],
-                    schema=schema)
+    from sqlalchemy.sql.elements import quoted_name
+
+    qname = lambda value: quoted_name(str(value), True)
+    qschema = qname(schema) if schema is not None else None
+    return sa_table(qname(detail_name),
+                    *[sa_column(qname(c)) for c in searchable],
+                    schema=qschema)
 
 
 def bounded_count_query(table: str, db_type: str, schema: str | None,
@@ -208,6 +224,24 @@ def load_table(engine_or_conn, db_type: str, detail: dict,
             n = len(next(iter(raw_cols.values()), []))
             sampled = known_count is not None and known_count > max_rows
             cc = code_columns(raw_cols)
+            heuristic_samples = {}
+            wide = [e["name"] for e in excluded if e.get("reason") in ("wide-text", "json")]
+            if wide:
+                try:
+                    sample_rows = load_columns(engine_or_conn, db_type, name, wide,
+                                              schema=schema, scan_id=scan_id, limit=200)
+                    for i, col in enumerate(wide):
+                        vals = []
+                        for row in sample_rows:
+                            v = row[i]
+                            if v is None:
+                                continue
+                            vals.append(str(v)[:200])
+                        if vals:
+                            heuristic_samples[col] = code_columns({col: vals})
+                except Exception as e:
+                    log.warning("wide-text heuristic sample skipped for %s: %s", name, e,
+                                extra={"scan_id": scan_id, "step": "load", "table": name})
         except Exception as e:
             log.error("load failed for %s: %s: %s", name, type(e).__name__, e,
                       extra={"scan_id": scan_id, "step": "load", "table": name})

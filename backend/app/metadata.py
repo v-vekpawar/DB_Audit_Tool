@@ -20,6 +20,7 @@ EXCLUDED_SCHEMAS = frozenset({
 EXCLUDED_DATABASES = frozenset({
     "information_schema", "mysql", "performance_schema", "sys",
     "template0", "template1",
+    "master", "model", "msdb", "tempdb",
 })
 
 EXCLUDED_TABLE_PREFIXES = ("pg_", "sql_")
@@ -36,6 +37,8 @@ def effective_schema(db_type: str, schema: str | None) -> str | None:
     t = (db_type or "").lower()
     if t == "postgresql":
         return schema or "public"
+    if t == "mssql":
+        return schema or None
     if t == "oracle":
         # Oracle owners are conventionally uppercase; the inspector
         # matches them exactly, so normalise (quoted-lowercase owners
@@ -74,6 +77,13 @@ def list_databases(engine_or_conn, db_type: str, scan_id: str = "-") -> list:
                 rows = engine_or_conn.execute(sa_text(
                     "SELECT datname FROM pg_database WHERE NOT datistemplate "
                     "ORDER BY 1")).fetchall()
+                names = [r[0] for r in rows]
+            elif t == "mssql":
+                rows = engine_or_conn.execute(sa_text(
+                    "SELECT name FROM sys.databases "
+                    "WHERE state_desc = 'ONLINE' "
+                    "AND name NOT IN ('master','model','msdb','tempdb') "
+                    "ORDER BY name")).fetchall()
                 names = [r[0] for r in rows]
             elif t == "oracle":
                 rows = engine_or_conn.execute(sa_text(
